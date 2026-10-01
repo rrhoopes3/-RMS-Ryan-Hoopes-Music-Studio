@@ -1,0 +1,32 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+dist/
+publish/
+.cursor/
+node_modules/
+secrets/
+.env
+.env.*
+*.pem
+credentials.json
+
+# User recordings and disposable cache (never commit)
+*.wav.tmp
+recovery/*.lock
+**/cache/waveforms/*
+!**/cache/waveforms/.gitkeep
+
+# Local user projects outside samples/
+/projects/
+/My */
+
+# Disposable sample-project sidecars
+samples/**/cache/
+samples/**/autosave/
+samples/**/recovery/
+samples/**/*.bak
+
+# Keep the CC0 practice-beat WAVs and project.json

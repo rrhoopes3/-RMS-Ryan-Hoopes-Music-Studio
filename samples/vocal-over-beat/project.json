@@ -1,0 +1,195 @@
+{
+  "formatVersion": 1,
+  "appVersion": "1.0.0",
+  "name": "Practice Beat",
+  "createdUtc": "2026-10-01T03:54:26.2597908\u002B00:00",
+  "modifiedUtc": "2026-10-01T03:54:26.3586570\u002B00:00",
+  "sampleRate": 48000,
+  "tempoBpm": 90,
+  "timeSignature": {
+    "numerator": 4,
+    "denominator": 4
+  },
+  "recordingOffsetFrames": 0,
+  "countInBars": 1,
+  "preRollBars": 1,
+  "loopRecording": false,
+  "loop": {
+    "enabled": false,
+    "startFrame": 0,
+    "endFrame": 2048000
+  },
+  "punch": {
+    "enabled": false,
+    "startFrame": 0,
+    "endFrame": 0
+  },
+  "selectionStartFrame": 0,
+  "selectionEndFrame": 0,
+  "markers": [
+    {
+      "id": "83998ccb25b94ffe904cfcdabc40e0f6",
+      "name": "Intro",
+      "frame": 0,
+      "lyrics": "Breathe. Wait for the count-in.",
+      "notes": ""
+    },
+    {
+      "id": "8d77ab72134247efbfa89463d35e5cfb",
+      "name": "Verse",
+      "frame": 512000,
+      "lyrics": "Sing the first line you want to keep.",
+      "notes": ""
+    },
+    {
+      "id": "39321e3ce8284d319bfb8ed31c960514",
+      "name": "Chorus",
+      "frame": 1024000,
+      "lyrics": "Lean a little louder here.",
+      "notes": ""
+    }
+  ],
+  "media": [
+    {
+      "id": "8c443bb162c5486ab4e08dfd98f82f81",
+      "originalFileName": "practice-beat.wav",
+      "originalRelativePath": "media/originals/practice-beat.wav",
+      "workingRelativePath": "media/working/practice-beat.wav",
+      "sourceSampleRate": 48000,
+      "workingSampleRate": 48000,
+      "channels": 2,
+      "lengthFrames": 2048000,
+      "bitDepth": 32
+    }
+  ],
+  "tracks": [
+    {
+      "id": "7277d757184f45a7aca586a944e29b39",
+      "name": "Backing track",
+      "role": "Backing",
+      "color": "#C17F45",
+      "channels": 2,
+      "armed": false,
+      "mute": false,
+      "solo": false,
+      "gainDb": 0,
+      "pan": 0,
+      "inputGainDb": 0,
+      "auditionTakeId": null,
+      "clips": [
+        {
+          "id": "0c6d26aa3f3343e095004cb370cd35fb",
+          "mediaId": "8c443bb162c5486ab4e08dfd98f82f81",
+          "startFrame": 0,
+          "sourceOffsetFrames": 0,
+          "lengthFrames": 2048000,
+          "fadeInFrames": 0,
+          "fadeOutFrames": 2400,
+          "stretchRatio": 1,
+          "muted": false
+        }
+      ],
+      "takes": [],
+      "comp": [],
+      "effects": []
+    },
+    {
+      "id": "d49d522bdd6549f796844249eff16c91",
+      "name": "Vocal",
+      "role": "Vocal",
+      "color": "#B83232",
+      "channels": 1,
+      "armed": true,
+      "mute": false,
+      "solo": false,
+      "gainDb": 0,
+      "pan": 0,
+      "inputGainDb": 0,
+      "auditionTakeId": null,
+      "clips": [],
+      "takes": [],
+      "comp": [],
+      "effects": [
+        {
+          "id": "821635afceac487a9e059f82de5dc20a",
+          "kind": "NoiseGate",
+          "bypass": false,
+          "parameters": {
+            "thresholdDb": -46,
+            "attackMs": 4,
+            "releaseMs": 70
+          }
+        },
+        {
+          "id": "4dd8452a45ca44fda8acddafe2bb487b",
+          "kind": "HighPass",
+          "bypass": false,
+          "parameters": {
+            "cutoffHz": 80
+          }
+        },
+        {
+          "id": "36addff8f0ff478c9d3ee4cd2ccca8b1",
+          "kind": "ParametricEq",
+          "bypass": false,
+          "parameters": {
+            "lowHz": 200,
+            "lowDb": 0,
+            "midHz": 2500,
+            "midQ": 0.9,
+            "midDb": 1.5,
+            "highHz": 9000,
+            "highDb": 1
+          }
+        },
+        {
+          "id": "ddd52bb3238d4e7c9322aed777b5cf75",
+          "kind": "Compressor",
+          "bypass": false,
+          "parameters": {
+            "thresholdDb": -16,
+            "ratio": 2.5,
+            "attackMs": 14,
+            "releaseMs": 90,
+            "makeupDb": 2
+          }
+        },
+        {
+          "id": "2784482a589145a7a2080e3e4a31a6b2",
+          "kind": "DeEsser",
+          "bypass": false,
+          "parameters": {
+            "freqHz": 7000,
+            "thresholdDb": -22,
+            "ratio": 3
+          }
+        },
+        {
+          "id": "c881c6a973434c22aba43402585bc3b1",
+          "kind": "Delay",
+          "bypass": true,
+          "parameters": {
+            "timeMs": 140,
+            "mix": 0.05,
+            "feedback": 0.15
+          }
+        },
+        {
+          "id": "6f0087612da64015888db84f555ed298",
+          "kind": "Reverb",
+          "bypass": false,
+          "parameters": {
+            "mix": 0.12,
+            "room": 0.55,
+            "damp": 0.4
+          }
+        }
+      ]
+    }
+  ],
+  "master": {
+    "gainDb": 0,
+    "limiterEnabled": true,
+    "limiterCeilingDb": -1
+  }
+}
