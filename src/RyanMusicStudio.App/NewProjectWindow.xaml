@@ -5,6 +5,7 @@
         Height="460" Width="560"
         WindowStartupLocation="CenterOwner"
         Background="{StaticResource BoothBrush}"
+        Foreground="{StaticResource CreamBrush}"
         ResizeMode="NoResize">
     <StackPanel Margin="24">
         <TextBlock Text="New Vocal Session" FontFamily="Palatino Linotype" FontSize="24"/>

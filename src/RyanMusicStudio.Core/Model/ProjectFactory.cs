@@ -57,7 +57,7 @@ public static class ProjectFactory
         {
             Name = "Verse",
             Frame = 0,
-            Lyrics = "Write the words you want to see while you sing."
+            Lyrics = "" // nothing in the app edits lyrics yet, so don't show an instruction it can't follow
         });
 
         return project;

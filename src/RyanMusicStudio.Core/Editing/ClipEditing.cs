@@ -83,6 +83,102 @@ public static class ClipEditing
         right.StartFrame = left.EndFrame - overlap;
     }
 
+    /// <summary>
+    /// Before the first chosen part, lays the take the singer was hearing under the whole track, so a
+    /// chosen part (or a punch-in) replaces only its own range instead of silencing everything else.
+    /// </summary>
+    public static void SeedComp(Track track, string? heardTakeId, Take? exclude = null)
+    {
+        if (track.Comp.Regions.Count > 0) return;
+        var heard = track.Takes.FirstOrDefault(t => t.Id == heardTakeId && t != exclude)
+                    ?? track.Takes.Where(t => t.Committed && t != exclude).OrderBy(t => t.RecordedUtc).LastOrDefault();
+        if (heard == null) return;
+        track.Comp.Regions.Add(new CompRegion
+        {
+            TakeId = heard.Id,
+            TimelineStartFrame = heard.StartFrame,
+            SourceOffsetFrames = heard.SourceOffsetFrames,
+            LengthFrames = heard.LengthFrames
+        });
+    }
+
+    /// <summary>
+    /// Makes [start, end) of <paramref name="take"/> the performance there. Parts on either side are
+    /// trimmed but run on under it by <paramref name="seam"/> frames, so every join is an equal-power
+    /// crossfade (no click, no dip). Returns null if the range misses the take.
+    /// </summary>
+    public static CompRegion? ChoosePart(Track track, Take take, long start, long end, long seam)
+    {
+        start = Math.Max(start, take.StartFrame);
+        end = Math.Min(end, take.StartFrame + take.LengthFrames);
+        if (end <= start) return null;
+
+        // More of the same take, lined up the same way, next to or under the new part: merge it in.
+        // Crossfading identical audio into itself would add up to a +3 dB bump at each join.
+        var mapping = take.SourceOffsetFrames - take.StartFrame;
+        for (var merged = true; merged;)
+        {
+            merged = false;
+            foreach (var r in track.Comp.Regions.ToList())
+            {
+                if (r.TakeId != take.Id || r.SourceOffsetFrames - r.TimelineStartFrame != mapping) continue;
+                if (r.EndFrame < start || r.TimelineStartFrame > end) continue;
+                track.Comp.Regions.Remove(r);
+                start = Math.Min(start, r.TimelineStartFrame);
+                end = Math.Max(end, r.EndFrame);
+                merged = true;
+            }
+        }
+        seam = Math.Clamp(seam, 0, (end - start) / 2);
+
+        foreach (var r in track.Comp.Regions.ToList())
+        {
+            if (r.EndFrame < start || r.TimelineStartFrame > end) continue; // not touching
+            track.Comp.Regions.Remove(r);
+            var source = track.Takes.FirstOrDefault(t => t.Id == r.TakeId);
+            // Timeline frames where r's take still has audio, so it can run on under the crossfade.
+            var audioStart = source == null ? r.TimelineStartFrame : r.TimelineStartFrame - (r.SourceOffsetFrames - source.SourceOffsetFrames);
+            var audioEnd = source == null ? r.EndFrame : r.TimelineStartFrame + (source.SourceOffsetFrames + source.LengthFrames - r.SourceOffsetFrames);
+
+            // A piece that is only an earlier crossfade's lead-in or tail is dropped with the rest.
+            if (start - r.TimelineStartFrame > r.FadeInFrames)
+            {
+                var stop = Math.Max(start, Math.Min(start + seam, audioEnd));
+                var len = stop - r.TimelineStartFrame;
+                var overlap = stop - start;
+                track.Comp.Regions.Add(new CompRegion
+                {
+                    TakeId = r.TakeId,
+                    TimelineStartFrame = r.TimelineStartFrame,
+                    SourceOffsetFrames = r.SourceOffsetFrames,
+                    LengthFrames = len,
+                    FadeInFrames = Math.Min(r.FadeInFrames, len / 2),
+                    FadeOutFrames = overlap > 0 ? overlap : Math.Min(seam, len / 2)
+                });
+            }
+            if (r.EndFrame - end > r.FadeOutFrames)
+            {
+                var from = Math.Min(end, Math.Max(end - seam, audioStart));
+                var len = r.EndFrame - from;
+                var overlap = end - from;
+                track.Comp.Regions.Add(new CompRegion
+                {
+                    TakeId = r.TakeId,
+                    TimelineStartFrame = from,
+                    SourceOffsetFrames = r.SourceOffsetFrames + (from - r.TimelineStartFrame),
+                    LengthFrames = len,
+                    FadeInFrames = overlap > 0 ? overlap : Math.Min(seam, len / 2),
+                    FadeOutFrames = Math.Min(r.FadeOutFrames, len / 2)
+                });
+            }
+        }
+
+        var region = AddCompRegion(track, take, start, take.SourceOffsetFrames + (start - take.StartFrame), end - start);
+        region.FadeInFrames = seam;
+        region.FadeOutFrames = seam;
+        return region;
+    }
+
     public static CompRegion AddCompRegion(Track track, Take take, long timelineStart, long sourceOffset, long length)
     {
         var region = new CompRegion

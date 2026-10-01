@@ -1,4 +1,5 @@
 using System.IO;
+using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using RyanMusicStudio.Core.Dsp;
@@ -30,7 +31,12 @@ public sealed class SessionController : IDisposable
     private readonly DispatcherTimer _clock = new() { Interval = TimeSpan.FromMilliseconds(50) };
     private readonly DispatcherTimer _autosave = new() { Interval = TimeSpan.FromSeconds(30) };
     private readonly MixExporter _exporter = new();
+    private readonly Dispatcher _ui = Dispatcher.CurrentDispatcher;
+    private readonly DispatcherTimer _deviceRescan = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private UserSettings _settings = UserSettings.Load();
+
+    private const string NoSongMessage = "Start a New Vocal Session or open a song first.";
+    private string? _heardBeforeTake; // the take the armed track played when R was pressed
 
     public event Action? Changed;
     public event Action<string>? Banner;
@@ -63,6 +69,7 @@ public sealed class SessionController : IDisposable
         _engine.StatusChanged += s => SetStatus(s);
         _engine.DeviceLost += info =>
         {
+            _devicesMissing = true; // re-apply the device when it comes back
             SetStatus(info.RecoveryMessage);
             Banner?.Invoke(info.RecoveryMessage);
         };
@@ -72,13 +79,14 @@ public sealed class SessionController : IDisposable
             OutputPeak = Math.Max(m.OutputPeakL, m.OutputPeakR);
             Clipping = m.ClipCount > 0 || m.InputPeak >= 0.98f;
         };
-        _engine.TakeCommitted += _ => Raise();
+        // The engine commits takes on a worker thread; touch the song only on the UI thread.
+        _engine.TakeCommitted += result => _ui.InvokeAsync(() => OnTakeCommitted(result));
         _engine.PlayheadMoved += frame =>
         {
             if (Project != null)
             {
                 var marker = Project.MarkerAtOrBefore(frame);
-                Lyrics = marker == null ? "" : $"{marker.Name}: {marker.Lyrics}";
+                Lyrics = string.IsNullOrWhiteSpace(marker?.Lyrics) ? "" : $"{marker.Name}: {marker.Lyrics}";
             }
         };
         _clock.Tick += (_, _) =>
@@ -91,6 +99,18 @@ public sealed class SessionController : IDisposable
             if (Project is { Dirty: true })
                 _store.Autosave(Project);
         };
+        // Plugging a USB mic in after launch should just work. Windows sends several
+        // notifications per plug, so wait for them to settle before rescanning.
+        _engine.DevicesChanged += () => _ui.InvokeAsync(() =>
+        {
+            _deviceRescan.Stop();
+            _deviceRescan.Start();
+        });
+        _deviceRescan.Tick += (_, _) =>
+        {
+            _deviceRescan.Stop();
+            RescanDevices();
+        };
         _clock.Start();
         _autosave.Start();
         RefreshDevices();
@@ -100,6 +120,7 @@ public sealed class SessionController : IDisposable
     public void Go(StudioPlace place)
     {
         Place = place;
+        _engine.SetInputPreview(place == StudioPlace.Setup);
         Raise();
     }
 
@@ -107,13 +128,79 @@ public sealed class SessionController : IDisposable
     {
         Inputs = _engine.Inputs();
         Outputs = _engine.Outputs();
-        SelectedInput = Inputs.FirstOrDefault(d => d.Id == _settings.InputDeviceId) ?? Inputs.FirstOrDefault();
-        SelectedOutput = Outputs.FirstOrDefault(d => d.Id == _settings.OutputDeviceId) ?? Outputs.FirstOrDefault();
+        // A device the singer chose is used whenever it is plugged in. If it is unplugged, nothing is
+        // picked in its place (the spec says never to switch devices silently). With no choice made
+        // yet, follow the Windows default device.
+        SelectedInput = Pick(Inputs, _settings.InputDeviceId, _engine.Devices.DefaultInputId());
+        SelectedOutput = Pick(Outputs, _settings.OutputDeviceId, _engine.Devices.DefaultOutputId());
+        Raise();
+    }
+
+    private static AudioDeviceInfo? Pick(IReadOnlyList<AudioDeviceInfo> devices, string? chosenId, string? defaultId) =>
+        !string.IsNullOrEmpty(chosenId)
+            ? devices.FirstOrDefault(d => d.Id == chosenId)
+            : devices.FirstOrDefault(d => d.Id == defaultId) ?? devices.FirstOrDefault();
+
+    /// <summary>Re-reads the device list and switches to the chosen devices if they changed.</summary>
+    public void RescanDevices(bool fromButton = false)
+    {
+        if (_engine.IsTakeActive || _engine.IsPlaying || _engine.IsTestTaking)
+        {
+            if (fromButton)
+            {
+                RefreshDevices(); // the list may update now; the streams switch once playback stops
+                SetStatus("Device list updated. RMS switches devices when playback or recording stops.");
+            }
+            _deviceRescan.Start(); // try again once the take or playback is over
+            return;
+        }
+        RefreshDevices();
+        if (ReportMissingDevices() || SelectedInput == null || SelectedOutput == null) return;
+        var cameBack = _devicesMissing;
+        if (!cameBack && SelectedInput.Id == _engine.Config.InputDeviceId && SelectedOutput.Id == _engine.Config.OutputDeviceId) return;
+        _devicesMissing = false;
+        try
+        {
+            ApplyDevices();
+            SetStatus($"Using {SelectedInput.Name} and {SelectedOutput.Name}.");
+        }
+        catch (Exception ex) { SetStatus("RMS could not switch audio devices: " + ex.Message); }
+    }
+
+    // A chosen device that is unplugged is reported, never silently replaced (spec 2.1).
+    private bool _devicesMissing;
+
+    private bool ReportMissingDevices()
+    {
+        var missing = new List<string>();
+        if (SelectedInput == null && !string.IsNullOrEmpty(_settings.InputDeviceId)) missing.Add("microphone");
+        if (SelectedOutput == null && !string.IsNullOrEmpty(_settings.OutputDeviceId)) missing.Add("headphones");
+        if (missing.Count == 0) return false;
+        _devicesMissing = true;
+        SetStatus($"Your chosen {string.Join(" and ", missing)} isn't plugged in. Plug it back in, or pick another on Audio Setup.");
+        return true;
+    }
+
+    // Changing devices or buffer reconfigures the engine, which would end a take in progress.
+    private bool SettingsLockedForTake()
+    {
+        if (!BusyRecording("Stop recording first, then change audio settings.")) return false;
+        Raise(); // put the control back to the real setting
+        return true;
+    }
+
+    public void SetInputChannel(int channel)
+    {
+        if (SettingsLockedForTake()) return;
+        _settings.InputChannel = Math.Clamp(channel, 0, 2);
+        _engine.Config.InputChannel = _settings.InputChannel; // takes effect on the next mic buffer
+        _settings.Save();
         Raise();
     }
 
     public void ChooseInput(AudioDeviceInfo device)
     {
+        if (SettingsLockedForTake()) return;
         SelectedInput = device;
         _settings.InputDeviceId = device.Id;
         ApplyDevices();
@@ -121,6 +208,7 @@ public sealed class SessionController : IDisposable
 
     public void ChooseOutput(AudioDeviceInfo device)
     {
+        if (SettingsLockedForTake()) return;
         SelectedOutput = device;
         _settings.OutputDeviceId = device.Id;
         ApplyDevices();
@@ -128,6 +216,7 @@ public sealed class SessionController : IDisposable
 
     public void SetExclusive(bool exclusive)
     {
+        if (SettingsLockedForTake()) return;
         _settings.ExclusiveMode = exclusive;
         ApplyDevices();
     }
@@ -142,12 +231,14 @@ public sealed class SessionController : IDisposable
 
     public void SetBuffer(int ms)
     {
+        if (SettingsLockedForTake()) return;
         _settings.BufferMilliseconds = Math.Clamp(ms, 8, 80);
         ApplyDevices();
     }
 
     public void SetUserOffsetMs(double ms)
     {
+        if (SettingsLockedForTake()) return;
         var rate = Project?.SampleRate ?? _settings.PreferredSampleRate;
         _settings.UserRecordingOffsetFrames = TimelineMath.SecondsToFrame(ms / 1000.0, rate);
         ApplyDevices();
@@ -160,53 +251,88 @@ public sealed class SessionController : IDisposable
         SetStatus("Audio setup saved. You can start a vocal session.");
     }
 
-    public void PlayTestTone() => _engine.PlayTestTone();
+    public void PlayTestTone()
+    {
+        if (BusyRecording("Stop recording first, then play the test tone.") || _engine.IsTestTaking) return;
+        try { _engine.PlayTestTone(); }
+        catch (Exception ex) { SetStatus("RMS could not play the test tone: " + ex.Message); }
+        _engine.SetInputPreview(Place == StudioPlace.Setup); // the tone reopened the output and closed the mic
+    }
 
     public async Task RecordTestTakeAsync()
     {
-        var folder = Path.Combine(Path.GetTempPath(), "RMS", "test-takes");
-        SetStatus("Recording a short test. Sing a line…");
-        var path = await _engine.RecordTestTakeAsync(TimeSpan.FromSeconds(4), folder);
-        _engine.PlayFile(path);
-        SetStatus("That was your test take. If you heard it, you are ready to record a song.");
+        if (BusyRecording("Stop recording first, then record a test.") || _engine.IsTestTaking) return;
+        try
+        {
+            var folder = Path.Combine(Path.GetTempPath(), "RMS", "test-takes");
+            SetStatus("Recording a short test. Sing a line…");
+            var path = await _engine.RecordTestTakeAsync(TimeSpan.FromSeconds(4), folder);
+            if (_engine.IsTakeActive) return;
+            _engine.PlayFile(path);
+            SetStatus("That was your test take. If you heard it, you are ready to record a song.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus("RMS could not record the test: " + ex.Message + " Check the microphone choice above.");
+        }
+        _engine.SetInputPreview(Place == StudioPlace.Setup);
     }
+
+    /// <summary>False (and says why) while a take or count-in is running.</summary>
+    public bool CanSwitchSong() => !BusyRecording("Stop recording first (press R or Space), then switch songs.");
 
     public void NewVocalSession(string name, string parentFolder, double tempo, int num, int den, int sampleRate)
     {
+        if (!CanSwitchSong() || !LeaveProject()) return;
+        // Never write over an existing song; the dialog suggests the same name every time.
+        var requestedName = name;
         var root = Path.Combine(parentFolder, Sanitize(name));
+        for (var n = 2; ProjectPaths.LooksLikeProject(root); n++)
+        {
+            name = $"{requestedName} ({n})";
+            root = Path.Combine(parentFolder, Sanitize(name));
+        }
         var project = ProjectFactory.CreateVocalOverBeat(name, root, tempo, num, den, sampleRate);
         VocalPresets.Apply(project.Tracks.First(t => t.Role == TrackRole.Vocal), VocalPresets.Clean);
         _store.Save(project);
         OpenLoaded(project);
-        SetStatus("New vocal session ready. Drag a backing track onto the timeline.");
+        SetStatus(name == requestedName
+            ? "New vocal session ready. Drag a backing track onto the timeline."
+            : $"\"{requestedName}\" already exists, so this session is called \"{name}\". Drag a backing track onto the timeline.");
         Go(_settings.AudioSetupConfirmed ? StudioPlace.Arrange : StudioPlace.Setup);
     }
 
     public bool TryOpen(string root, bool useAutosave = false)
     {
+        if (!CanSwitchSong()) return false;
         if (!ProjectPaths.LooksLikeProject(root))
         {
             SetStatus("That folder is not an RMS project.");
             return false;
         }
-
-        var offer = _store.InspectRecovery(root);
-        ProjectDocument project;
-        if (useAutosave)
-            project = _store.OpenAutosave(root);
-        else if (offer != null)
+        if (!useAutosave && Project != null && SamePath(root, Project.RootPath))
         {
-            RecoveryText = offer.Message + " Finished takes on disk: " + offer.CompletedTakeFiles.Count + ".";
-            Banner?.Invoke(RecoveryText);
-            project = File.Exists(offer.AutosavePath) ? _store.OpenAutosave(root) : _store.Open(root);
+            // Already open: reloading from disk would throw away work that isn't saved yet.
+            Go(StudioPlace.Arrange);
+            return true;
+        }
+
+        if (!LeaveProject()) return false; // save the current song before anything is read from disk
+        var offer = _store.InspectRecovery(root);
+        RecoveryText = offer == null ? "" : offer.Message + " Finished takes on disk: " + offer.CompletedTakeFiles.Count + ".";
+        ProjectDocument project;
+        // Only an autosave newer than the last save is worth restoring, and the singer decides.
+        if (useAutosave || (offer is { AutosaveIsNewer: true } && ConfirmRestore()))
+        {
+            project = _store.OpenAutosave(root);
+            project.Touch(); // restored work isn't in project.json yet, so it still needs saving
         }
         else
-        {
-            RecoveryText = "";
             project = _store.Open(root);
-        }
 
         OpenLoaded(project);
+        if (offer is { AutosaveIsNewer: false })
+            Banner?.Invoke(RecoveryText); // a real crash: say so, and that finished takes are on disk
         return true;
     }
 
@@ -221,58 +347,152 @@ public sealed class SessionController : IDisposable
     public void SaveAs(string newRoot)
     {
         if (Project == null) return;
+        if (ProjectPaths.LooksLikeProject(newRoot) && !SamePath(newRoot, Project.RootPath))
+        {
+            SetStatus("That folder already holds an RMS song. Choose an empty folder for the copy.");
+            return;
+        }
         _store.SaveAs(Project, newRoot);
         _settings.RememberProject(Project.Name, Project.RootPath);
         SetStatus("Project saved to the new folder.");
     }
 
+    public void BrowseAndImport()
+    {
+        if (Project == null)
+        {
+            SetStatus(NoSongMessage);
+            return;
+        }
+        var path = BrowseAudio();
+        if (path != null)
+            ImportAudio(path);
+    }
+
     public void ImportAudio(string path)
     {
-        if (Project == null) return;
+        if (Project == null)
+        {
+            SetStatus(NoSongMessage);
+            return;
+        }
+        if (BusyRecording("Stop recording first, then import.")) return;
+        // Imported audio goes on its own track: a take on the same track would silence it, and two
+        // files on one track would play on top of each other in one lane.
+        static bool Free(Track t) => !t.Armed && t.Takes.Count == 0 && t.Clips.Count == 0;
+        var selected = SelectedTrack();
+        var target = selected != null && selected.Role != TrackRole.Vocal && Free(selected)
+            ? selected
+            : Project.Tracks.FirstOrDefault(t => t.Role == TrackRole.Backing && Free(t));
         Remember();
-        var target = SelectedTrack() ?? Project.Tracks.FirstOrDefault(t => t.Role == TrackRole.Backing);
-        _engine.ImportIntoProject(path, target);
-        SetStatus("Backing track copied into the project. The original file was left untouched.");
+        var created = target == null;
+        target ??= ProjectFactory.CreateAudioTrack(Project, NextTrackName("Backing track"), TrackRole.Backing, TrackChannelLayout.Stereo);
+        try
+        {
+            _engine.ImportIntoProject(path, target);
+        }
+        catch (Exception ex)
+        {
+            if (created) Project.Tracks.Remove(target);
+            SetStatus($"RMS couldn't read {Path.GetFileName(path)}: {ex.Message} Try a WAV or MP3 file.");
+            return;
+        }
+        SetStatus($"{Path.GetFileName(path)} copied onto {target.Name}. The original file was left untouched.");
         Raise();
     }
 
     public void PlayPause()
     {
-        if (Project == null) return;
-        if (_engine.IsPlaying && !_engine.IsRecording)
-            _engine.Stop();
-        else if (!_engine.IsRecording)
-            _engine.Play();
+        if (Project == null)
+        {
+            SetStatus(NoSongMessage);
+            return;
+        }
+        if (_engine.IsRecording)
+            _ = _engine.StopRecordAsync(); // Space ends the take and keeps it
+        else if (_engine.IsPlaying || _engine.IsTakeActive)
+            Stop();
+        else
+        {
+            try { _engine.Play(); }
+            catch (Exception ex)
+            {
+                _engine.Stop();
+                SetStatus("RMS could not play: " + ex.Message);
+            }
+        }
     }
 
     public void Record()
     {
-        if (Project == null) return;
+        if (Project == null)
+        {
+            SetStatus(NoSongMessage);
+            return;
+        }
         if (_engine.IsRecording)
+        {
             _ = _engine.StopRecordAsync();
-        else
+            return;
+        }
+        if (_engine.IsTakeActive)
+        {
+            var wasCountingIn = _engine.IsCountingIn;
+            Stop();
+            SetStatus(wasCountingIn ? "Count-in cancelled." : "Recording stopped.");
+            return;
+        }
+        if (_engine.IsTestTaking)
+        {
+            SetStatus("Wait for the test take to finish, then press R.");
+            return;
+        }
+        var armed = Project.Tracks.FirstOrDefault(t => t.Armed) ?? Project.Tracks.FirstOrDefault(t => t.Role == TrackRole.Vocal);
+        _heardBeforeTake = armed?.AuditionTakeId;
+        try
+        {
             _engine.StartRecord();
+        }
+        catch (Exception ex)
+        {
+            _engine.Stop();
+            SetStatus("RMS could not start recording: " + ex.Message);
+            return;
+        }
+        // The engine adds the take when recording stops; this snapshot lets Ctrl+Z remove that
+        // take (Remember() skips edits made during the take, so they undo together with it).
+        _undo.RememberBeforeChange(Project);
     }
 
-    public void Stop() => _engine.Stop();
+    public void Stop()
+    {
+        _engine.Stop();
+        _engine.SetInputPreview(Place == StudioPlace.Setup);
+    }
 
     public void Undo()
     {
-        if (Project == null) return;
+        if (Project == null || RecordingBlocksUndo()) return;
         var next = _undo.Undo(Project);
         if (next == null) return;
-        Project = next;
-        _engine.AttachProject(Project);
-        Raise();
+        ReplaceAfterUndo(next);
     }
 
     public void Redo()
     {
-        if (Project == null) return;
+        if (Project == null || RecordingBlocksUndo()) return;
         var next = _undo.Redo(Project);
         if (next == null) return;
+        ReplaceAfterUndo(next);
+    }
+
+    private void ReplaceAfterUndo(ProjectDocument next)
+    {
+        var playhead = _engine.PlayheadFrames;
         Project = next;
+        Project.Touch(); // the restored copy differs from the file on disk, so it still needs saving
         _engine.AttachProject(Project);
+        _engine.SetPlayhead(playhead);
         Raise();
     }
 
@@ -294,14 +514,57 @@ public sealed class SessionController : IDisposable
         Raise();
     }
 
-    public void ToggleArm(Track track)
+    /// <summary>Makes the selected track the one that R records into.</summary>
+    public void ArmSelectedTrack()
     {
+        var track = SelectedTrack();
+        if (Project == null || track == null || BusyRecording("Stop recording first, then switch tracks.")) return;
+        if (track.Clips.Count > 0 || track.Role == TrackRole.Backing)
+        {
+            // A take on a track with imported audio would replace that audio in playback.
+            SetStatus($"{track.Name} is for imported audio. Use Add track to make a guitar or vocal track to record into.");
+            return;
+        }
         Remember();
-        var arm = !track.Armed;
-        foreach (var t in Project!.Tracks)
-            t.Armed = t.Id == track.Id && arm;
-        Project.Touch();
+        ArmOnly(track);
+        SetStatus($"R now records into {track.Name}.");
         Raise();
+    }
+
+    /// <summary>Adds a recordable track (e.g. "Guitar") and makes it the one R records into.</summary>
+    public void AddRecordingTrack(string baseName, TrackRole role)
+    {
+        if (Project == null)
+        {
+            SetStatus(NoSongMessage);
+            return;
+        }
+        if (BusyRecording("Stop recording first, then add a track.")) return;
+        Remember();
+        var name = NextTrackName(baseName);
+        var track = ProjectFactory.CreateAudioTrack(Project, name, role, TrackChannelLayout.Mono);
+        if (role == TrackRole.Vocal)
+            VocalPresets.Apply(track, VocalPresets.Clean);
+        ArmOnly(track);
+        SelectedTrackId = track.Id;
+        _engine.NotifyProjectChanged();
+        SetStatus($"{name} track added. Press R to record into it.");
+        Raise();
+    }
+
+    private string NextTrackName(string baseName)
+    {
+        var name = baseName;
+        for (var n = 2; Project!.Tracks.Any(t => t.Name == name); n++)
+            name = $"{baseName} {n}";
+        return name;
+    }
+
+    private void ArmOnly(Track track)
+    {
+        foreach (var t in Project!.Tracks)
+            t.Armed = t.Id == track.Id;
+        Project.Touch();
     }
 
     public void Tell(string message) => SetStatus(message);
@@ -326,23 +589,13 @@ public sealed class SessionController : IDisposable
         VocalPresets.Apply(track, name);
         Project?.Touch();
         _engine.NotifyProjectChanged();
-        SetStatus(name + " vocal starting point applied. You can still change every knob.");
-    }
-
-    public void AddTrack()
-    {
-        if (Project == null) return;
-        Remember();
-        ProjectFactory.CreateAudioTrack(Project, "Track " + (Project.Tracks.Count + 1), TrackRole.Audio, TrackChannelLayout.Stereo);
-        _engine.NotifyProjectChanged();
-        Raise();
+        SetStatus(name + " vocal starting point applied: it sets the EQ, compression and reverb for you.");
     }
 
     public void SplitSelected()
     {
-        if (Project == null || SelectedClipId == null) return;
-        var (track, clip) = FindClip(SelectedClipId);
-        if (track == null || clip == null) return;
+        var (track, clip) = SelectedClipOrExplain();
+        if (Project == null || track == null || clip == null) return;
         Remember();
         ClipEditing.Split(track, clip, _engine.PlayheadFrames);
         Project.Touch();
@@ -353,6 +606,38 @@ public sealed class SessionController : IDisposable
     public void DeleteSelected()
     {
         if (Project == null || SelectedClipId == null) return;
+        if (FindTake(SelectedClipId) is { } take)
+        {
+            if (BusyRecording("Stop recording first, then remove a take.")) return;
+            var owner = Project.Tracks.First(t => t.Takes.Contains(take));
+            Remember();
+            var removed = owner.Comp.Regions.Where(r => r.TakeId == take.Id).ToList();
+            owner.Takes.Remove(take);
+            owner.Comp.Regions.RemoveAll(r => r.TakeId == take.Id);
+            if (owner.AuditionTakeId == take.Id)
+                owner.AuditionTakeId = null;
+            if (owner.Comp.Regions.Count > 0)
+            {
+                // Fill the deleted take's chosen parts with the take you hear, so nothing goes silent.
+                var fallback = owner.Takes.FirstOrDefault(t => t.Id == owner.AuditionTakeId)
+                               ?? owner.Takes.Where(t => t.Committed).OrderBy(t => t.RecordedUtc).LastOrDefault();
+                if (fallback != null)
+                    foreach (var r in removed)
+                        ClipEditing.ChoosePart(owner, fallback, r.TimelineStartFrame, r.EndFrame, Seam);
+                if (owner.Comp.Regions.Select(r => r.TakeId).Distinct().Count() == 1)
+                {
+                    // Only one take left in the chosen parts: just play that take.
+                    owner.AuditionTakeId = owner.Comp.Regions[0].TakeId;
+                    owner.Comp.Regions.Clear();
+                }
+            }
+            SelectedClipId = null;
+            Project.Touch();
+            _engine.NotifyProjectChanged();
+            SetStatus($"{take.Name} removed. Ctrl+Z brings it back; the recording also stays in the song folder.");
+            Raise();
+            return;
+        }
         var (track, clip) = FindClip(SelectedClipId);
         if (track == null || clip == null) return;
         Remember();
@@ -376,8 +661,7 @@ public sealed class SessionController : IDisposable
 
     public void FadeSelected(long fadeIn, long fadeOut)
     {
-        if (SelectedClipId == null) return;
-        var (_, clip) = FindClip(SelectedClipId);
+        var (_, clip) = SelectedClipOrExplain();
         if (clip == null) return;
         Remember();
         ClipEditing.SetFades(clip, fadeIn, fadeOut);
@@ -392,40 +676,193 @@ public sealed class SessionController : IDisposable
         ClipEditing.AuditionTake(track, take.Id);
         Project?.Touch();
         _engine.NotifyProjectChanged();
-        SetStatus("Listening to " + take.Name);
+        SetStatus(track.Comp.Regions.Count > 0
+            ? $"{take.Name} is marked, but you're hearing your chosen parts. Use Clear chosen parts to listen to whole takes."
+            : "Listening to " + take.Name);
         Raise();
     }
 
-    public void AddCompFromPlayhead(Track track, Take take, long length)
+    /// <summary>
+    /// Uses [start, end) of a take as the performance there ("Choose best parts"), replacing
+    /// earlier choices in that range so two takes never play on top of each other.
+    /// </summary>
+    public void ChoosePart(string takeId, long start, long end)
     {
+        if (Project == null) return;
+        var track = Project.Tracks.FirstOrDefault(t => t.Takes.Any(k => k.Id == takeId));
+        var take = track?.Takes.First(k => k.Id == takeId);
+        if (track == null || take == null) return;
+        start = Math.Max(Math.Min(start, end), take.StartFrame);
+        end = Math.Min(Math.Max(start, end), take.StartFrame + take.LengthFrames);
+        if (end - start < Project.SampleRate / 10) return; // a click, not a drag
         Remember();
-        var start = SnapFrame(_engine.PlayheadFrames);
-        ClipEditing.AddCompRegion(track, take, start, Math.Max(0, start - take.StartFrame), length);
-        Project?.Touch();
-        _engine.NotifyProjectChanged();
-        SetStatus("Added that part to the chosen performance.");
-        Raise();
-    }
-
-    public void StretchSelected(double ratio)
-    {
-        if (Project == null || SelectedClipId == null) return;
-        var (_, clip) = FindClip(SelectedClipId);
-        if (clip == null) return;
-        Remember();
-        clip.StretchRatio = Math.Clamp(ratio, 0.85, 1.18);
+        ClipEditing.SeedComp(track, track.AuditionTakeId);
+        ClipEditing.ChoosePart(track, take, start, end, Seam);
         Project.Touch();
         _engine.NotifyProjectChanged();
-        SetStatus("Small timing stretch set. Listen back before you keep it.");
+        SetStatus($"Using {take.Name} from {Clock(start)} to {Clock(end)}. Press Space to hear your chosen parts.");
+        Raise();
+    }
+
+    public void ClearChosenParts()
+    {
+        if (Project == null) return;
+        var track = SelectedTrack() is { Comp.Regions.Count: > 0 } selected
+            ? selected
+            : Project.Tracks.FirstOrDefault(t => t.Comp.Regions.Count > 0);
+        if (track == null)
+        {
+            SetStatus("No chosen parts yet. Turn on Choose best parts, then drag across the best part of a take.");
+            return;
+        }
+        Remember();
+        track.Comp.Regions.Clear();
+        Project.Touch();
+        _engine.NotifyProjectChanged();
+        SetStatus($"Chosen parts on {track.Name} cleared. You're hearing whole takes again.");
+        Raise();
+    }
+
+    private long Seam => (Project?.SampleRate ?? 48000) / 100; // 10 ms crossfade at every join
+
+    // A punch-in or a loop-recording pass replaces only its own range; the rest of the track keeps
+    // the take the singer was hearing when they pressed R.
+    private void OnTakeCommitted(RecordedTakeResult result)
+    {
+        var take = result.Take;
+        var track = Project?.Tracks.FirstOrDefault(t => t.Takes.Contains(take));
+        if (Project == null || track == null) return;
+        var looping = Project.Loop.Enabled && Project.Loop.EndFrame > Project.Loop.StartFrame;
+        var partial = Project.Punch.Enabled || looping;
+        if (track.Takes.Count > 1 && (partial || track.Comp.Regions.Count > 0))
+        {
+            if (partial)
+                ClipEditing.SeedComp(track, _heardBeforeTake, exclude: take);
+            if (track.Comp.Regions.Count > 0)
+            {
+                var takeEnd = take.StartFrame + take.LengthFrames;
+                var start = Project.Punch.Enabled ? Project.Punch.StartFrame : take.StartFrame;
+                var end = Project.Punch.Enabled ? Project.Punch.EndFrame
+                    : looping ? Math.Min(takeEnd, Project.Loop.EndFrame) : takeEnd;
+                ClipEditing.ChoosePart(track, take, start, end, Seam);
+                Project.Touch();
+                _engine.NotifyProjectChanged();
+                SetStatus($"{take.Name} replaces {Clock(start)} to {Clock(end)}; the rest of {track.Name} is unchanged.");
+            }
+        }
+        Raise();
+    }
+
+    public bool HasSelection => Project is { } p && p.SelectionEndFrame > p.SelectionStartFrame;
+
+    /// <summary>The range dragged on the ruler; loop, punch-in and "Selected range" export use it.</summary>
+    public void SetSelection(long start, long end)
+    {
+        if (Project == null || BusyRecording("Stop recording first, then mark a range.")) return;
+        if (start == end && (Project.Punch.Enabled || Project.Loop.Enabled))
+            return; // a plain click on the ruler just moves the playhead; punch/loop keep their range
+        Project.SelectionStartFrame = Math.Max(0, Math.Min(start, end));
+        Project.SelectionEndFrame = Math.Max(0, Math.Max(start, end));
+        if (HasSelection)
+            SetStatus($"Selected {Clock(Project.SelectionStartFrame)} to {Clock(Project.SelectionEndFrame)}. Loop, punch-in and export can use this range.");
+
+        // Loop and punch follow the marked range, so what's drawn is what plays and records.
+        if (Project.Punch.Enabled)
+        {
+            if (HasSelection)
+            {
+                Project.Punch.StartFrame = Project.SelectionStartFrame;
+                Project.Punch.EndFrame = Project.SelectionEndFrame;
+            }
+            else
+            {
+                Project.Punch.Enabled = false;
+                SetStatus("Punch-in is off because no range is marked.");
+            }
+            Project.Touch();
+        }
+        if (Project.Loop.Enabled && HasSelection)
+        {
+            Project.Loop.StartFrame = Project.SelectionStartFrame;
+            Project.Loop.EndFrame = Project.SelectionEndFrame;
+            Project.Touch();
+        }
+        _engine.NotifyProjectChanged();
+        Raise();
+    }
+
+    public void SetPunch(bool on)
+    {
+        if (Project == null) return;
+        if (BusyRecording("Stop recording first, then change punch-in."))
+        {
+            Raise();
+            return;
+        }
+        if (on && !HasSelection)
+        {
+            Project.Punch.Enabled = false;
+            SetStatus("First drag on the ruler above the tracks to mark the part to re-record, then tick Punch in/out.");
+            Raise();
+            return;
+        }
+        Project.Punch.Enabled = on;
+        if (on)
+        {
+            Project.Punch.StartFrame = Project.SelectionStartFrame;
+            Project.Punch.EndFrame = Project.SelectionEndFrame;
+            SetStatus($"Punch-in ready: R plays a bar before {Clock(Project.Punch.StartFrame)}, then records until {Clock(Project.Punch.EndFrame)}.");
+        }
+        Project.Touch();
+        _engine.NotifyProjectChanged();
+        Raise();
+    }
+
+    /// <summary>Moves the selected take or clip 20 ms later (+1) or earlier (-1) without changing its pitch.</summary>
+    public void NudgeSelected(int direction)
+    {
+        if (Project == null) return;
+        var step = direction * (long)(Project.SampleRate / 50);
+        var take = SelectedClipId == null ? null : FindTake(SelectedClipId);
+        var clip = take == null ? SelectedClipOrExplain().clip : null;
+        if (take == null && clip == null) return;
+        Remember();
+        if (take != null)
+        {
+            step = Math.Max(step, -take.StartFrame);
+            take.StartFrame += step;
+            // Chosen parts keep their place and their crossfades; the take's audio slides inside them.
+            foreach (var region in Project.Tracks.SelectMany(t => t.Comp.Regions).Where(r => r.TakeId == take.Id))
+                region.SourceOffsetFrames = Math.Clamp(region.SourceOffsetFrames - step, take.SourceOffsetFrames,
+                    Math.Max(take.SourceOffsetFrames, take.SourceOffsetFrames + take.LengthFrames - region.LengthFrames));
+        }
+        else
+            ClipEditing.Move(clip!, clip!.StartFrame + step);
+        Project.Touch();
+        _engine.NotifyProjectChanged();
+        SetStatus(direction > 0 ? "Moved 20 ms later. Listen back before you keep it." : "Moved 20 ms earlier. Listen back before you keep it.");
         Raise();
     }
 
     public void ToggleLoop()
     {
         if (Project == null) return;
+        if (BusyRecording("Stop recording first, then change the loop."))
+        {
+            Raise();
+            return;
+        }
         Project.Loop.Enabled = !Project.Loop.Enabled;
-        if (Project.Loop.EndFrame <= Project.Loop.StartFrame)
+        if (Project.Loop.Enabled && HasSelection)
+        {
+            // Loop the part the singer marked, e.g. to practise or record a tricky line over and over.
+            Project.Loop.StartFrame = Project.SelectionStartFrame;
+            Project.Loop.EndFrame = Project.SelectionEndFrame;
+        }
+        else if (Project.Loop.EndFrame <= Project.Loop.StartFrame)
             Project.Loop.EndFrame = Math.Max(Project.SampleRate * 4, Project.LengthFrames());
+        if (Project.Loop.Enabled)
+            SetStatus($"Looping {Clock(Project.Loop.StartFrame)} to {Clock(Project.Loop.EndFrame)}.");
         Project.Touch();
         _engine.NotifyProjectChanged();
         Raise();
@@ -438,14 +875,17 @@ public sealed class SessionController : IDisposable
         Raise();
     }
 
+    // Moving the backing track mid-take would put the rest of the take out of time.
     public void GoToStart()
     {
+        if (BusyRecording("Stop recording first (press R or Space).")) return;
         _engine.SetPlayhead(0);
         Raise();
     }
 
     public void Seek(long frame)
     {
+        if (BusyRecording("Stop recording first (press R or Space).")) return;
         _engine.SetPlayhead(Math.Max(0, frame));
         Raise();
     }
@@ -455,13 +895,14 @@ public sealed class SessionController : IDisposable
         if (Project == null) return;
         var start = scope == ExportScope.SelectedRange ? Project.SelectionStartFrame : 0;
         var end = scope == ExportScope.SelectedRange ? Project.SelectionEndFrame : Project.LengthFrames();
+        SetStatus("Exporting " + Path.GetFileName(dest) + "…");
         await Task.Run(() => _exporter.Export(Project, _engine.Cache, dest, format, scope, start, end));
-        SetStatus("Song exported. The click track and any reference track were left out.");
+        SetStatus($"Exported {Path.GetFileName(dest)}. The click track and any reference track were left out.");
     }
 
-    public string? BrowseOpenProject()
+    public string? BrowseOpenProject(string title = "Open RMS project folder")
     {
-        var dlg = new OpenFolderDialog { Title = "Open RMS project folder" };
+        var dlg = new OpenFolderDialog { Title = title };
         return dlg.ShowDialog() == true ? dlg.FolderName : null;
     }
 
@@ -502,9 +943,12 @@ public sealed class SessionController : IDisposable
 
     private void OpenLoaded(ProjectDocument project)
     {
+        if (_engine.IsPlaying)
+            _engine.Stop(); // the old song's mixer must not keep playing into the new one
         Project = project;
         _undo.Clear();
-        _store.MarkUncleanExit(project.RootPath);
+        try { _store.MarkUncleanExit(project.RootPath); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* read-only folder: no crash marker */ }
         _engine.AttachProject(project);
         _settings.RememberProject(project.Name, project.RootPath);
         SelectedTrackId = project.Tracks.FirstOrDefault(t => t.Armed)?.Id;
@@ -512,15 +956,64 @@ public sealed class SessionController : IDisposable
         Go(StudioPlace.Arrange);
     }
 
+    // Switching songs works like closing the app: unsaved work is saved (Save also clears the
+    // unclean-exit marker). If saving fails, the autosave keeps the newest state for next time.
+    private bool LeaveProject()
+    {
+        if (Project == null) return true;
+        try
+        {
+            if (Project.Dirty)
+                _store.Save(Project);
+            else
+                ProjectStore.ClearCrashMarker(new ProjectPaths(Project.RootPath));
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            try
+            {
+                _store.Autosave(Project);
+                return true;
+            }
+            catch (Exception) when (Project.Dirty)
+            {
+                // Keep the song open rather than lose work that couldn't be written anywhere.
+                SetStatus($"RMS couldn't save {Project.Name}: {ex.Message} Reconnect its drive or free some space, then try again.");
+                return false;
+            }
+            catch (Exception)
+            {
+                return true; // nothing unsaved; only the crash marker couldn't be cleared
+            }
+        }
+    }
+
+    private static bool ConfirmRestore() =>
+        MessageBox.Show(
+            "This song has autosaved work that is newer than its last save. RMS may not have closed cleanly.\n\n" +
+            "Restore the newer work?\n\nYes: restore it.\nNo: open the last save.",
+            "RMS — recover work?",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question) == MessageBoxResult.Yes;
+
+    private static bool SamePath(string a, string b) =>
+        string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)), StringComparison.OrdinalIgnoreCase);
+
     private void ApplySavedDevices()
     {
-        if (SelectedInput == null && SelectedOutput == null) return;
+        var anyChosen = !string.IsNullOrEmpty(_settings.InputDeviceId) || !string.IsNullOrEmpty(_settings.OutputDeviceId);
+        if (SelectedInput == null && SelectedOutput == null && !anyChosen) return;
+        // Configure even when a chosen device is missing, so the engine knows not to use another one.
         try { ApplyDevices(); }
         catch { /* devices may be unplugged until setup */ }
+        ReportMissingDevices();
     }
 
     private void ApplyDevices()
     {
+        var playhead = _engine.PlayheadFrames; // switching devices shouldn't send the song back to 0:00
         _engine.Configure(new EngineConfig
         {
             InputDeviceId = SelectedInput?.Id ?? _settings.InputDeviceId,
@@ -528,23 +1021,61 @@ public sealed class SessionController : IDisposable
             ExclusiveMode = _settings.ExclusiveMode,
             SoftwareMonitor = _settings.SoftwareMonitor,
             BufferMilliseconds = _settings.BufferMilliseconds,
-            UserOffsetFrames = _settings.UserRecordingOffsetFrames
+            UserOffsetFrames = _settings.UserRecordingOffsetFrames,
+            InputChannel = _settings.InputChannel
         });
         if (Project != null)
+        {
             _engine.AttachProject(Project);
+            _engine.SetPlayhead(playhead);
+        }
+        if (Place == StudioPlace.Setup)
+            _engine.SetInputPreview(true); // Configure closed the mic; keep the setup meter live
         _settings.Save();
         Raise();
     }
 
     private void Remember()
     {
-        if (Project != null)
+        // During a take the snapshot from Record() already covers these edits.
+        if (Project != null && !_engine.IsRecording && !_engine.IsCountingIn)
             _undo.RememberBeforeChange(Project);
     }
+
+    // Swapping the document mid-take would commit the take to a detached track.
+    private bool RecordingBlocksUndo() => BusyRecording("Stop recording first, then undo.");
+
+    private bool BusyRecording(string message)
+    {
+        if (!_engine.IsTakeActive) return false;
+        SetStatus(message);
+        return true;
+    }
+
+    private string Clock(long frame) => TimelineMath.FormatClock(frame, Project?.SampleRate ?? 48000);
 
     private long SnapFrame(long frame) =>
         Project == null ? frame : TimelineMath.Snap(frame, Snap, Project.SampleRate, Project.TempoBpm,
             Project.TimeSignature.Numerator, Project.TimeSignature.Denominator);
+
+    private (Track? track, AudioClip? clip) SelectedClipOrExplain()
+    {
+        if (Project == null) return (null, null);
+        if (SelectedClipId != null)
+        {
+            var found = FindClip(SelectedClipId);
+            if (found.clip != null) return found;
+            if (FindTake(SelectedClipId) != null)
+            {
+                SetStatus("Takes can't be split or faded yet. Use Choose best parts to keep the sections you like.");
+                return (null, null);
+            }
+        }
+        SetStatus("Click a clip on the timeline first.");
+        return (null, null);
+    }
+
+    private Take? FindTake(string id) => Project?.FindTake(id);
 
     private (Track? track, AudioClip? clip) FindClip(string id)
     {

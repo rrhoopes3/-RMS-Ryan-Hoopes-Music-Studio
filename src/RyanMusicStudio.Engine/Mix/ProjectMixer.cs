@@ -93,11 +93,11 @@ public sealed class ProjectMixer : ISampleProvider
         };
     }
 
-    public void NotifyInputPeak(float peak)
+    public void NotifyInputPeak(float level, bool clipped)
     {
-        if (peak > _meters.InputPeak)
-            Interlocked.Exchange(ref _meters.InputPeak, peak);
-        if (peak >= 0.99f)
+        if (level > _meters.InputPeak)
+            Interlocked.Exchange(ref _meters.InputPeak, level);
+        if (clipped)
             Interlocked.Increment(ref _meters.ClipCount);
     }
 
@@ -163,7 +163,12 @@ public sealed class ProjectMixer : ISampleProvider
 
         var next = playhead + frames;
         if (!ExportMode && snap.Loop.Enabled && snap.Loop.EndFrame > snap.Loop.StartFrame && next >= snap.Loop.EndFrame)
-            next = snap.Loop.StartFrame + (next - snap.Loop.EndFrame);
+        {
+            // If the loop was just moved behind the playhead, jump straight to its start rather than
+            // stepping back one buffer at a time (which plays as stutter).
+            var wasInside = playhead >= snap.Loop.StartFrame && playhead < snap.Loop.EndFrame;
+            next = wasInside ? snap.Loop.StartFrame + (next - snap.Loop.EndFrame) : snap.Loop.StartFrame;
+        }
         Interlocked.Exchange(ref _playhead, next);
         return frames * 2;
     }

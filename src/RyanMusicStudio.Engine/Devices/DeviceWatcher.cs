@@ -12,6 +12,9 @@ public sealed class DeviceWatcher : IMMNotificationClient, IDisposable
 
     public event Action<DeviceLostInfo>? DeviceLost;
 
+    /// <summary>Raised on a COM thread when a device is plugged in, removed or changes state.</summary>
+    public event Action? DevicesChanged;
+
     public DeviceWatcher()
     {
         _enumerator.RegisterEndpointNotificationCallback(this);
@@ -35,13 +38,18 @@ public sealed class DeviceWatcher : IMMNotificationClient, IDisposable
         {
             RaiseIfWatched(deviceId, "was unplugged or disabled");
         }
+        DevicesChanged?.Invoke();
     }
 
-    public void OnDeviceRemoved(string deviceId) => RaiseIfWatched(deviceId, "was removed");
+    public void OnDeviceRemoved(string deviceId)
+    {
+        RaiseIfWatched(deviceId, "was removed");
+        DevicesChanged?.Invoke();
+    }
 
-    public void OnDeviceAdded(string pwstrDeviceId) { }
+    public void OnDeviceAdded(string pwstrDeviceId) => DevicesChanged?.Invoke();
 
-    public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId) { }
+    public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId) => DevicesChanged?.Invoke();
 
     public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
 
