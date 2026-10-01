@@ -10,7 +10,7 @@
     <Company>Ryan Hoopes</Company>
     <Authors>Ryan Hoopes</Authors>
     <Description>RMS — Ryan Music Studio. Offline vocal recorder for Windows.</Description>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>

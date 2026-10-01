@@ -15,7 +15,7 @@ RMS runs on **Windows 11**, works **offline**, and needs **no account**. Your au
 
 ## Download and run
 
-Get the portable app from the [v1.0.0 release](https://github.com/rrhoopes3/-RMS-Ryan-Hoopes-Music-Studio/releases/tag/v1.0.0): download **RMS.exe**, then double-click it. No installer is required.
+Download the newest **RMS.exe** from [ryanhoopesmusic.com/rmstudio](https://ryanhoopesmusic.com/rmstudio/) or the [latest release](https://github.com/rrhoopes3/-RMS-Ryan-Hoopes-Music-Studio/releases/latest), then double-click it. No installer is required.
 
 A local build also writes:
 
