@@ -170,8 +170,8 @@ public sealed class ProjectDocument
             foreach (var region in track.Comp.Regions)
                 end = Math.Max(end, region.EndFrame);
         }
-        if (Loop.EndFrame > end) end = Loop.EndFrame;
-        if (SelectionEndFrame > end) end = SelectionEndFrame;
+        // Only recorded and imported audio counts: a marked range or loop dragged past the end must not
+        // pad a whole-song export with silence.
         return end;
     }
 

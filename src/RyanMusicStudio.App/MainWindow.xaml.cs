@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -14,21 +15,44 @@ public partial class MainWindow : Window
 {
     private readonly SessionController _session = new();
     private bool _syncing;
+    private int _refreshQueued;
+    private bool _focusFromKeyboard;
+    private ProjectDocument? _mixerProject;
+    private string _mixerTracks = "";
 
     public MainWindow()
     {
+        // BAML wires ValueChanged before it applies Slider.Minimum, so handlers fire mid-load.
+        _syncing = true;
         InitializeComponent();
-        _session.Changed += () => Dispatcher.Invoke(RefreshUi, DispatcherPriority.Background);
-        _session.Banner += msg => Dispatcher.Invoke(() =>
+        _session.Changed += QueueRefresh;
+        _session.Banner += msg => Dispatcher.InvokeAsync(() =>
             MessageBox.Show(msg, "RMS", MessageBoxButton.OK, MessageBoxImage.Information));
         Timeline.Seek = frame => _session.Seek(frame);
+        Timeline.Zoomed = pixelsPerSecond => _session.Zoom = pixelsPerSecond;
+        PreviewGotKeyboardFocus += (_, _) =>
+            _focusFromKeyboard = InputManager.Current.MostRecentInputDevice is KeyboardDevice;
         Timeline.SelectClip = id => _session.SelectedClipId = id;
         Timeline.MoveClip = (id, start) =>
         {
             _session.SelectedClipId = id;
             _session.MoveSelected(start);
         };
+        Timeline.ChoosePart = (takeId, start, end) => _session.ChoosePart(takeId, start, end);
+        Timeline.SelectRange = (start, end) => _session.SetSelection(start, end);
         RefreshUi();
+    }
+
+    // Changed is also raised from audio and pool threads. Never block the caller: a synchronous
+    // Invoke deadlocks against a UI thread that is waiting for the engine to finish a take.
+    private void QueueRefresh()
+    {
+        if (Interlocked.Exchange(ref _refreshQueued, 1) == 1) return;
+        Dispatcher.InvokeAsync(() =>
+        {
+            Volatile.Write(ref _refreshQueued, 0);
+            RefreshUi();
+        }, DispatcherPriority.Background);
     }
 
     private void RefreshUi()
@@ -42,8 +66,16 @@ public partial class MainWindow : Window
         InMeter.Level = _session.InputPeak;
         OutMeter.Level = _session.OutputPeak;
         InMeter.IsClipping = _session.Clipping;
+        // Re-render even when the level is unchanged, so the peak-hold line can fall back.
+        InMeter.InvalidateVisual();
+        OutMeter.InvalidateVisual();
         ClipLabel.Visibility = _session.Clipping ? Visibility.Visible : Visibility.Collapsed;
-        RecordBtn.Content = _session.Engine.IsRecording ? "Stop recording  (R)" : "Record another take  (R)";
+        RecordBtn.Content = _session.Engine.IsRecording ? "Stop recording  (R)"
+            : _session.Engine.IsCountingIn ? "Counting in…  (R cancels)"
+            : "Record another take  (R)";
+        Title = _session.Project == null
+            ? "RMS — Ryan Music Studio"
+            : $"{_session.Project.Name}{(_session.Project.Dirty ? " •" : "")} — RMS";
 
         HomePlace.Visibility = Vis(_session.Place == StudioPlace.Home);
         SetupPlace.Visibility = Vis(_session.Place == StudioPlace.Setup);
@@ -59,7 +91,7 @@ public partial class MainWindow : Window
 
         if (_session.Place == StudioPlace.Home)
         {
-            RecentList.ItemsSource = _session.Settings.Recent.Select(r => r.Name + "  —  " + r.Path).ToList();
+            SetItems(RecentList, _session.Settings.Recent.Select(r => r.Name + "  —  " + r.Path).ToList());
         }
 
         if (_session.Place == StudioPlace.Setup)
@@ -68,8 +100,19 @@ public partial class MainWindow : Window
             OutputBox.ItemsSource = _session.Outputs;
             InputBox.SelectedItem = _session.SelectedInput;
             OutputBox.SelectedItem = _session.SelectedOutput;
-            InputDetail.Text = _session.SelectedInput?.DetailLine ?? "No microphone found.";
-            OutputDetail.Text = _session.SelectedOutput?.DetailLine ?? "No headphone output found.";
+            InputDetail.Text = _session.SelectedInput?.DetailLine
+                ?? (!string.IsNullOrEmpty(_session.Settings.InputDeviceId)
+                    ? "Your chosen microphone isn't plugged in. Plug it back in, or pick another from the list."
+                    : "No microphone found. Plug in your USB mic or interface; it appears here on its own.");
+            InputChannelRow.Visibility = Vis(_session.SelectedInput is { Channels: > 1 });
+            InputChannelBox.SelectedIndex = Math.Clamp(_session.Settings.InputChannel, 0, 2);
+            SetupMeter.Level = _session.InputPeak;
+            SetupMeter.IsClipping = _session.Clipping;
+            SetupMeter.InvalidateVisual();
+            OutputDetail.Text = _session.SelectedOutput?.DetailLine
+                ?? (!string.IsNullOrEmpty(_session.Settings.OutputDeviceId)
+                    ? "Your chosen headphones aren't plugged in. Plug them back in, or pick another output from the list."
+                    : "No headphone output found.");
             LatencyWarn.Text = _session.SelectedOutput != null && AudioDeviceService.LatencyUnsuitable(_session.SelectedOutput)
                 ? "This output looks wireless or slow. Use wired headphones if the beat feels late while you sing."
                 : "";
@@ -84,9 +127,10 @@ public partial class MainWindow : Window
 
         if (_session.Project != null)
         {
-            TrackList.ItemsSource = _session.Project.Tracks.Select(DescribeTrack).ToList();
+            SetItems(TrackList, _session.Project.Tracks.Select(DescribeTrack).ToList());
             var selected = _session.SelectedTrack();
-            TakeList.ItemsSource = selected?.Takes.Select(t => t.Name + (selected.AuditionTakeId == t.Id ? "  · listening" : "")).ToList();
+            TrackList.SelectedIndex = selected == null ? -1 : _session.Project.Tracks.IndexOf(selected);
+            SetItems(TakeList, selected?.Takes.Select(t => t.Name + TakeNote(selected, t)).ToList());
             LoopBox.IsChecked = _session.Project.Loop.Enabled;
             LoopRecBox.IsChecked = _session.Project.LoopRecording;
             PunchBox.IsChecked = _session.Project.Punch.Enabled;
@@ -94,16 +138,52 @@ public partial class MainWindow : Window
             Timeline.Playhead = _session.Engine.PlayheadFrames;
             Timeline.PixelsPerSecond = _session.Zoom;
             Timeline.SelectedClipId = _session.SelectedClipId;
+            Timeline.CompMode = _session.CompMode;
             Timeline.InvalidateProject();
+            var songIsEmpty = _session.Project.Tracks.All(t => t.Clips.Count == 0 && t.Takes.Count == 0);
+            ImportBtn.Style = (Style)FindResource(songIsEmpty ? "PrimaryButton" : "PlainButton");
+            CompBtn.Style = (Style)FindResource(_session.CompMode ? "PrimaryButton" : "PlainButton");
+            CompBtn.Content = _session.CompMode ? "Done choosing parts" : "Choose best parts";
+            TakesHint.Text = _session.CompMode
+                ? "Drag across the best part of a take on the timeline. Later choices replace earlier ones."
+                : "Record several passes. Double-click a take to hear it, then choose the best parts.";
             if (_session.Place == StudioPlace.Mix)
-                RebuildMixer();
+                RebuildMixerIfChanged();
         }
+        if (_session.Place != StudioPlace.Mix)
+            _mixerProject = null;
 
         _syncing = false;
     }
 
+    // Replacing ItemsSource clears the selection, so only do it when the text changed.
+    private static void SetItems(ItemsControl list, List<string>? items)
+    {
+        if (list.ItemsSource is List<string> current && items != null && current.SequenceEqual(items)) return;
+        if (list.ItemsSource == null && items == null) return;
+        list.ItemsSource = items;
+    }
+
+    // RefreshUi runs on every 50 ms tick; rebuilding the strips each time destroys a fader mid-drag.
+    private void RebuildMixerIfChanged()
+    {
+        var tracks = string.Join("|", _session.Project!.Tracks.Select(t => t.Id));
+        if (ReferenceEquals(_mixerProject, _session.Project) && tracks == _mixerTracks) return;
+        _mixerProject = _session.Project;
+        _mixerTracks = tracks;
+        RebuildMixer();
+    }
+
+    // Once parts are chosen, those are what plays; otherwise the auditioned take is.
+    private static string TakeNote(Track track, Take take) =>
+        track.Comp.Regions.Count > 0
+            ? track.Comp.Regions.Any(r => r.TakeId == take.Id) ? "  · chosen parts" : ""
+            : track.AuditionTakeId == take.Id ? "  · listening" : "";
+
     private static string DescribeTrack(Track t) =>
-        $"{t.Name}{(t.Armed ? "  · armed" : "")}{(t.Mute ? "  · mute" : "")}{(t.Solo ? "  · solo" : "")}";
+        $"{(t.Armed ? "● " : "")}{t.Name}" +
+        $"{(t.Takes.Count == 1 ? "  · 1 take" : t.Takes.Count > 1 ? $"  · {t.Takes.Count} takes" : "")}" +
+        $"{(t.Mute ? "  · mute" : "")}{(t.Solo ? "  · solo" : "")}";
 
     private void RebuildMixer()
     {
@@ -183,6 +263,7 @@ public partial class MainWindow : Window
 
     private void NewSession_Click(object sender, RoutedEventArgs e)
     {
+        if (!_session.CanSwitchSong()) return;
         var dlg = new NewProjectWindow(_session.Settings.LastProjectParent);
         if (dlg.ShowDialog() == true)
             _session.NewVocalSession(dlg.ProjectName, dlg.Folder, dlg.Tempo, dlg.Numerator, dlg.Denominator, dlg.SampleRate);
@@ -190,6 +271,7 @@ public partial class MainWindow : Window
 
     private void Open_Click(object sender, RoutedEventArgs e)
     {
+        if (!_session.CanSwitchSong()) return;
         var path = _session.BrowseOpenProject();
         if (path != null) _session.TryOpen(path);
     }
@@ -198,7 +280,7 @@ public partial class MainWindow : Window
 
     private void SaveAs_Click(object sender, RoutedEventArgs e)
     {
-        var path = _session.BrowseOpenProject();
+        var path = _session.BrowseOpenProject("Choose an empty folder for the copy");
         if (path != null) _session.SaveAs(path);
     }
 
@@ -276,7 +358,26 @@ public partial class MainWindow : Window
         _session.Go(_session.Project == null ? StudioPlace.Home : StudioPlace.Arrange);
     }
 
-    private void AddTrack_Click(object sender, RoutedEventArgs e) => _session.AddTrack();
+    private void AddTrack_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { ContextMenu: { } menu } button) return;
+        menu.PlacementTarget = button;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    private void AddGuitarTrack_Click(object sender, RoutedEventArgs e) => _session.AddRecordingTrack("Guitar", TrackRole.Audio);
+    private void AddVocalTrack_Click(object sender, RoutedEventArgs e) => _session.AddRecordingTrack("Vocal", TrackRole.Vocal);
+    private void ArmTrack_Click(object sender, RoutedEventArgs e) => _session.ArmSelectedTrack();
+    private void ImportBacking_Click(object sender, RoutedEventArgs e) => _session.BrowseAndImport();
+    private void ClearParts_Click(object sender, RoutedEventArgs e) => _session.ClearChosenParts();
+    private void RefreshDevices_Click(object sender, RoutedEventArgs e) => _session.RescanDevices(fromButton: true);
+
+    private void InputChannel_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_syncing && InputChannelBox.SelectedIndex >= 0)
+            _session.SetInputChannel(InputChannelBox.SelectedIndex);
+    }
 
     private void TrackList_Changed(object sender, SelectionChangedEventArgs e)
     {
@@ -290,18 +391,16 @@ public partial class MainWindow : Window
         var track = _session.SelectedTrack();
         if (track == null || TakeList.SelectedIndex < 0) return;
         var take = track.Takes[TakeList.SelectedIndex];
-        if (_session.CompMode)
-            _session.AddCompFromPlayhead(track, take, track.ProjectSafeLength(_session.Project!));
-        else
-            _session.AuditionTake(track, take);
+        _session.SelectedClipId = take.Id; // so Split/Fade/Nudge act on this take, not an older selection
+        _session.AuditionTake(track, take);
     }
 
     private void CompMode_Click(object sender, RoutedEventArgs e)
     {
         _session.CompMode = !_session.CompMode;
         _session.Tell(_session.CompMode
-            ? "Choose best parts: double-click a take to add the section at the playhead."
-            : "Listening to whole takes again.");
+            ? "Choose best parts: on the timeline, drag across the best part of a take. Do it for each part of the song."
+            : "Done choosing. Press Space to hear your chosen parts together.");
     }
 
     private void Fade_Click(object sender, RoutedEventArgs e)
@@ -311,8 +410,8 @@ public partial class MainWindow : Window
         _session.FadeSelected(fade, fade);
     }
 
-    private void StretchLate_Click(object sender, RoutedEventArgs e) => _session.StretchSelected(1.04);
-    private void StretchEarly_Click(object sender, RoutedEventArgs e) => _session.StretchSelected(0.96);
+    private void StretchLate_Click(object sender, RoutedEventArgs e) => _session.NudgeSelected(+1);
+    private void StretchEarly_Click(object sender, RoutedEventArgs e) => _session.NudgeSelected(-1);
 
     private void LoopRec_Click(object sender, RoutedEventArgs e)
     {
@@ -323,15 +422,7 @@ public partial class MainWindow : Window
 
     private void Punch_Click(object sender, RoutedEventArgs e)
     {
-        if (_session.Project == null || _syncing) return;
-        _session.Project.Punch.Enabled = PunchBox.IsChecked == true;
-        if (_session.Project.Punch.EndFrame <= _session.Project.Punch.StartFrame)
-        {
-            _session.Project.Punch.StartFrame = _session.Project.SelectionStartFrame;
-            _session.Project.Punch.EndFrame = Math.Max(_session.Project.SelectionEndFrame, _session.Project.Punch.StartFrame + _session.Project.SampleRate);
-        }
-        _session.Project.Touch();
-        _session.Engine.NotifyProjectChanged();
+        if (!_syncing) _session.SetPunch(PunchBox.IsChecked == true);
     }
 
     private async void Export_Click(object sender, RoutedEventArgs e)
@@ -349,17 +440,35 @@ public partial class MainWindow : Window
             3 => ExportScope.BackingStem,
             _ => ExportScope.WholeProject
         };
+        if (_session.Project == null)
+        {
+            _session.Tell("Start a New Vocal Session or open a song first.");
+            return;
+        }
+        if (scope == ExportScope.SelectedRange && !_session.HasSelection)
+        {
+            _session.Tell("No range is marked yet. On the Record page, drag on the ruler above the tracks, then export again.");
+            return;
+        }
         var dest = _session.BrowseExport(format);
         if (dest == null) return;
         try { await _session.ExportAsync(dest, format, scope); }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "RMS could not export", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
         }
+        if (MessageBox.Show($"Your song is saved as {Path.GetFileName(dest)}.\n\nOpen its folder now?", "Export finished",
+                MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes)
+            Process.Start("explorer.exe", $"/select,\"{dest}\"");
     }
 
+    // Handled on PreviewKeyDown so a control that was just clicked can't swallow Space/Home.
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
+        // A control reached with Tab keeps its own Space/Home (toggle a checkbox, press a button, first row).
+        if (_focusFromKeyboard && (e.Key is Key.Space or Key.Home) && Keyboard.FocusedElement is Control c && c != this)
+            return;
         var ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
         if (e.Key == Key.Space) { _session.PlayPause(); e.Handled = true; }
         else if (e.Key == Key.R && !ctrl) { _session.Record(); e.Handled = true; }
@@ -370,6 +479,7 @@ public partial class MainWindow : Window
         else if (ctrl && e.Key == Key.S) { _session.Save(); e.Handled = true; }
         else if (ctrl && e.Key == Key.N) { NewSession_Click(sender, e); e.Handled = true; }
         else if (ctrl && e.Key == Key.O) { Open_Click(sender, e); e.Handled = true; }
+        else if (ctrl && e.Key == Key.I) { _session.BrowseAndImport(); e.Handled = true; }
         else if (ctrl && e.Key == Key.Z) { _session.Undo(); e.Handled = true; }
         else if (ctrl && e.Key == Key.Y) { _session.Redo(); e.Handled = true; }
         else if (ctrl && (e.Key == Key.OemPlus || e.Key == Key.Add)) { ZoomIn_Click(sender, e); e.Handled = true; }
@@ -402,10 +512,4 @@ public partial class MainWindow : Window
         _session.Save();
         _session.Dispose();
     }
-}
-
-internal static class TrackLength
-{
-    public static long ProjectSafeLength(this Track track, ProjectDocument project) =>
-        Math.Max(project.SampleRate, project.LengthFrames() / 8);
 }

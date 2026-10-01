@@ -17,6 +17,10 @@
         <SolidColorBrush x:Key="MutedBrush" Color="#B9A894"/>
         <SolidColorBrush x:Key="SageBrush" Color="#7E8B6A"/>
         <SolidColorBrush x:Key="LineBrush" Color="#3F3228"/>
+        <SolidColorBrush x:Key="PanelBrush" Color="#221A15"/>
+        <SolidColorBrush x:Key="ControlBrush" Color="#3A2C22"/>
+        <SolidColorBrush x:Key="ControlHoverBrush" Color="#4A3A2C"/>
+        <SolidColorBrush x:Key="ControlBorderBrush" Color="#5A4636"/>
 
         <Style TargetType="Window">
             <Setter Property="Background" Value="{StaticResource BoothBrush}"/>
@@ -24,8 +28,19 @@
             <Setter Property="FontFamily" Value="Segoe UI"/>
             <Setter Property="FontSize" Value="15"/>
         </Style>
-        <Style TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource CreamBrush}"/>
+        <!-- No app-wide TextBlock style: it leaks cream text into every control template
+             (menus, combo boxes, tooltips, copper buttons). Windows set Foreground instead. -->
+
+        <!-- Keyboard focus cue that shows on the dark wood panels. -->
+        <Style x:Key="CopperFocus">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate>
+                        <Rectangle Margin="-3" Stroke="{StaticResource CopperBrush}" StrokeThickness="1.5"
+                                   StrokeDashArray="2 2" RadiusX="3" RadiusY="3" SnapsToDevicePixels="True"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="Wordmark" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Palatino Linotype"/>
@@ -46,6 +61,7 @@
             <Setter Property="Padding" Value="16,10"/>
             <Setter Property="FontSize" Value="16"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{StaticResource CopperFocus}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -79,7 +95,7 @@
             <Setter Property="Foreground" Value="#F3E6D4"/>
             <Setter Property="FontWeight" Value="Bold"/>
             <Setter Property="FontSize" Value="18"/>
-            <Setter Property="Width" Value="220"/>
+            <Setter Property="MinWidth" Value="250"/>
             <Setter Property="Height" Value="56"/>
         </Style>
         <Style x:Key="PlaceTab" TargetType="RadioButton">
@@ -87,6 +103,7 @@
             <Setter Property="FontSize" Value="15"/>
             <Setter Property="Margin" Value="0,0,18,0"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{StaticResource CopperFocus}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
@@ -114,27 +131,286 @@
             <Setter Property="Background" Value="#3A2C22"/>
             <Setter Property="Foreground" Value="#F3E6D4"/>
             <Setter Property="BorderBrush" Value="#5A4636"/>
+            <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="8,6"/>
             <Setter Property="CaretBrush" Value="#F3E6D4"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="2" SnapsToDevicePixels="True">
+                            <ScrollViewer x:Name="PART_ContentHost" Focusable="False"
+                                          HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource CopperBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="CheckBox">
             <Setter Property="Foreground" Value="{StaticResource CreamBrush}"/>
             <Setter Property="FontSize" Value="15"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{StaticResource CopperFocus}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <Grid Background="Transparent">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="box" Width="16" Height="16" CornerRadius="3" VerticalAlignment="Center"
+                                    Background="{StaticResource ControlBrush}" BorderBrush="{StaticResource ControlBorderBrush}" BorderThickness="1">
+                                <Path x:Name="mark" Data="M 3,7.5 L 6,10.5 L 11.5,4" Stroke="{StaticResource CopperBrush}" StrokeThickness="2"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
+                            </Border>
+                            <ContentPresenter Grid.Column="1" Margin="6,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="mark" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="box" Property="BorderBrush" Value="{StaticResource CopperBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="box" Property="Background" Value="{StaticResource ControlHoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
+
+        <!-- Faders: a dark walnut slot, a copper level fill and a brass cap. -->
+        <Style x:Key="BareRepeat" TargetType="RepeatButton">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton">
+                        <Border Background="Transparent"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="FaderFillH" TargetType="RepeatButton" BasedOn="{StaticResource BareRepeat}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton">
+                        <Border Background="Transparent">
+                            <Border Height="4" CornerRadius="2" VerticalAlignment="Center" Background="{StaticResource CopperBrush}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="FaderFillV" TargetType="RepeatButton" BasedOn="{StaticResource BareRepeat}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton">
+                        <Border Background="Transparent">
+                            <Border Width="4" CornerRadius="2" HorizontalAlignment="Center" Background="{StaticResource CopperBrush}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="BrassCap" TargetType="Thumb">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="cap" CornerRadius="3" BorderBrush="#7A5232" BorderThickness="1">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                    <GradientStop Color="#F0C48C" Offset="0"/>
+                                    <GradientStop Color="#C4844A" Offset="0.55"/>
+                                    <GradientStop Color="#8A5A30" Offset="1"/>
+                                </LinearGradientBrush>
+                            </Border.Background>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="cap" Property="BorderBrush" Value="{StaticResource CreamBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="cap" Property="BorderBrush" Value="{StaticResource CreamBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <ControlTemplate x:Key="FaderHorizontal" TargetType="Slider">
+            <Grid Background="Transparent" MinHeight="24">
+                <Border Height="6" Margin="7,0" CornerRadius="3" VerticalAlignment="Center"
+                        Background="{StaticResource BoothBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"/>
+                <Track x:Name="PART_Track">
+                    <Track.DecreaseRepeatButton>
+                        <RepeatButton Style="{StaticResource FaderFillH}" Command="{x:Static Slider.DecreaseLarge}"/>
+                    </Track.DecreaseRepeatButton>
+                    <Track.IncreaseRepeatButton>
+                        <RepeatButton Style="{StaticResource BareRepeat}" Command="{x:Static Slider.IncreaseLarge}"/>
+                    </Track.IncreaseRepeatButton>
+                    <Track.Thumb>
+                        <Thumb Style="{StaticResource BrassCap}" Width="14" Height="22"/>
+                    </Track.Thumb>
+                </Track>
+            </Grid>
+        </ControlTemplate>
+        <ControlTemplate x:Key="FaderVertical" TargetType="Slider">
+            <Grid Background="Transparent" MinWidth="30">
+                <Border Width="6" Margin="0,7" CornerRadius="3" HorizontalAlignment="Center"
+                        Background="{StaticResource BoothBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"/>
+                <Track x:Name="PART_Track">
+                    <Track.DecreaseRepeatButton>
+                        <RepeatButton Style="{StaticResource FaderFillV}" Command="{x:Static Slider.DecreaseLarge}"/>
+                    </Track.DecreaseRepeatButton>
+                    <Track.IncreaseRepeatButton>
+                        <RepeatButton Style="{StaticResource BareRepeat}" Command="{x:Static Slider.IncreaseLarge}"/>
+                    </Track.IncreaseRepeatButton>
+                    <Track.Thumb>
+                        <Thumb Style="{StaticResource BrassCap}" Width="30" Height="14"/>
+                    </Track.Thumb>
+                </Track>
+            </Grid>
+        </ControlTemplate>
         <Style TargetType="Slider">
             <Setter Property="Foreground" Value="{StaticResource CopperBrush}"/>
+            <Setter Property="FocusVisualStyle" Value="{StaticResource CopperFocus}"/>
+            <Setter Property="Template" Value="{StaticResource FaderHorizontal}"/>
+            <Style.Triggers>
+                <Trigger Property="Orientation" Value="Vertical">
+                    <Setter Property="Template" Value="{StaticResource FaderVertical}"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
+
+        <!-- Slim walnut scrollbars instead of the stock light-grey ones. -->
+        <Style x:Key="ScrollGrip" TargetType="Thumb">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="grip" Margin="2" CornerRadius="3" Background="{StaticResource ControlBorderBrush}"/>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="grip" Property="Background" Value="{StaticResource CopperBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="grip" Property="Background" Value="{StaticResource CopperBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <ControlTemplate x:Key="ScrollBarVertical" TargetType="ScrollBar">
+            <Border Background="{StaticResource PanelBrush}">
+                <Track x:Name="PART_Track" IsDirectionReversed="True">
+                    <Track.DecreaseRepeatButton>
+                        <RepeatButton Style="{StaticResource BareRepeat}" Command="{x:Static ScrollBar.PageUpCommand}"/>
+                    </Track.DecreaseRepeatButton>
+                    <Track.IncreaseRepeatButton>
+                        <RepeatButton Style="{StaticResource BareRepeat}" Command="{x:Static ScrollBar.PageDownCommand}"/>
+                    </Track.IncreaseRepeatButton>
+                    <Track.Thumb>
+                        <Thumb Style="{StaticResource ScrollGrip}"/>
+                    </Track.Thumb>
+                </Track>
+            </Border>
+        </ControlTemplate>
+        <ControlTemplate x:Key="ScrollBarHorizontal" TargetType="ScrollBar">
+            <Border Background="{StaticResource PanelBrush}">
+                <Track x:Name="PART_Track">
+                    <Track.DecreaseRepeatButton>
+                        <RepeatButton Style="{StaticResource BareRepeat}" Command="{x:Static ScrollBar.PageLeftCommand}"/>
+                    </Track.DecreaseRepeatButton>
+                    <Track.IncreaseRepeatButton>
+                        <RepeatButton Style="{StaticResource BareRepeat}" Command="{x:Static ScrollBar.PageRightCommand}"/>
+                    </Track.IncreaseRepeatButton>
+                    <Track.Thumb>
+                        <Thumb Style="{StaticResource ScrollGrip}"/>
+                    </Track.Thumb>
+                </Track>
+            </Border>
+        </ControlTemplate>
+        <Style TargetType="ScrollBar">
+            <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="MinHeight" Value="0"/>
+            <Setter Property="Width" Value="11"/>
+            <Setter Property="Template" Value="{StaticResource ScrollBarVertical}"/>
+            <Style.Triggers>
+                <Trigger Property="Orientation" Value="Horizontal">
+                    <Setter Property="Width" Value="Auto"/>
+                    <Setter Property="Height" Value="11"/>
+                    <Setter Property="Template" Value="{StaticResource ScrollBarHorizontal}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <Style TargetType="ListBox">
             <Setter Property="Background" Value="#221A15"/>
             <Setter Property="Foreground" Value="#F3E6D4"/>
             <Setter Property="BorderBrush" Value="#3F3228"/>
+            <Setter Property="FocusVisualStyle" Value="{StaticResource CopperFocus}"/>
+        </Style>
+        <!-- List rows: copper rail on the selected row instead of Windows blue. -->
+        <Style TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="8,5"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="row" Background="Transparent" BorderBrush="Transparent" BorderThickness="3,0,0,0"
+                                Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="row" Property="Background" Value="{StaticResource BoardBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="row" Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="row" Property="Background" Value="{StaticResource ControlBrush}"/>
+                                <Setter TargetName="row" Property="BorderBrush" Value="{StaticResource CopperBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="Menu">
             <Setter Property="Background" Value="#221A15"/>
             <Setter Property="Foreground" Value="#F3E6D4"/>
         </Style>
+        <!-- Submenu items sit on the stock light popup (dark text); the top-level headers
+             sit on the dark menu bar (cream text). -->
         <Style TargetType="MenuItem">
             <Setter Property="Foreground" Value="#1B1410"/>
+            <Style.Triggers>
+                <Trigger Property="Role" Value="TopLevelHeader">
+                    <Setter Property="Foreground" Value="{StaticResource CreamBrush}"/>
+                </Trigger>
+                <Trigger Property="Role" Value="TopLevelItem">
+                    <Setter Property="Foreground" Value="{StaticResource CreamBrush}"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
     </Application.Resources>
 </Application>

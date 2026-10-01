@@ -17,11 +17,29 @@ public sealed class AudioDeviceService : IDisposable
         catch { return null; }
     }
 
-    public MMDevice GetDefaultInput() =>
-        _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+    // Windows' "Default Device" for music (not the communications default a headset may hold).
+    // Null when nothing is plugged in, so callers can say so instead of surfacing a COM error.
+    public MMDevice? GetDefaultInput() =>
+        _enumerator.HasDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia)
+            ? _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia)
+            : null;
 
-    public MMDevice GetDefaultOutput() =>
-        _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+    public MMDevice? GetDefaultOutput() =>
+        _enumerator.HasDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia)
+            ? _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia)
+            : null;
+
+    public string? DefaultInputId()
+    {
+        try { return GetDefaultInput()?.ID; }
+        catch { return null; }
+    }
+
+    public string? DefaultOutputId()
+    {
+        try { return GetDefaultOutput()?.ID; }
+        catch { return null; }
+    }
 
     public AudioDeviceInfo Describe(MMDevice device, bool isInput)
     {

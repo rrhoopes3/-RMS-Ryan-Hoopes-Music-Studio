@@ -53,6 +53,17 @@ public sealed class FloatRingBuffer
         return read;
     }
 
+    /// <summary>
+    /// Consumer-side drop of everything queued so far. Safe while the producer keeps writing.
+    /// </summary>
+    public void DiscardAll()
+    {
+        var used = Volatile.Read(ref _count);
+        if (used <= 0) return;
+        _read = (_read + used) % _buffer.Length;
+        Interlocked.Add(ref _count, -used);
+    }
+
     public void Clear()
     {
         _write = 0;

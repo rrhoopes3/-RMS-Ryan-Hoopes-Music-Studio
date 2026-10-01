@@ -18,6 +18,8 @@ public sealed class UserSettings
     public int PreferredSampleRate { get; set; } = 48000;
     public int BufferMilliseconds { get; set; } = 20;
     public long UserRecordingOffsetFrames { get; set; }
+    /// <summary>0 = mix all mic channels, 1 = input 1 only, 2 = input 2 only.</summary>
+    public int InputChannel { get; set; }
     public bool AudioSetupConfirmed { get; set; }
     public string LastProjectParent { get; set; } = "";
     public List<RecentProject> Recent { get; set; } = [];

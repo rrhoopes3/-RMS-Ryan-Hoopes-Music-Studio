@@ -5,7 +5,8 @@
         Title="RMS — Ryan Music Studio"
         Height="820" Width="1280" MinHeight="640" MinWidth="980"
         Background="{StaticResource BoothBrush}"
-        KeyDown="OnKeyDown"
+        Foreground="{StaticResource CreamBrush}"
+        PreviewKeyDown="OnKeyDown"
         AllowDrop="True"
         Drop="OnDrop"
         DragOver="OnDragOver"
@@ -18,6 +19,8 @@
                 <MenuItem Header="Save" Click="Save_Click" InputGestureText="Ctrl+S"/>
                 <MenuItem Header="Save As…" Click="SaveAs_Click"/>
                 <Separator/>
+                <MenuItem Header="Import backing track…" Click="ImportBacking_Click" InputGestureText="Ctrl+I"/>
+                <Separator/>
                 <MenuItem Header="Export Song…" Click="GoExport_Click"/>
                 <MenuItem Header="Exit" Click="Exit_Click"/>
             </MenuItem>
@@ -26,6 +29,13 @@
                 <MenuItem Header="Redo" Click="Redo_Click" InputGestureText="Ctrl+Y"/>
                 <MenuItem Header="Split at playhead" Click="Split_Click" InputGestureText="S"/>
                 <MenuItem Header="Delete selected" Click="Delete_Click" InputGestureText="Delete"/>
+            </MenuItem>
+            <MenuItem Header="Trac_k">
+                <MenuItem Header="Add guitar track" Click="AddGuitarTrack_Click"/>
+                <MenuItem Header="Add vocal track" Click="AddVocalTrack_Click"/>
+                <MenuItem Header="Record into the selected track" Click="ArmTrack_Click"/>
+                <Separator/>
+                <MenuItem Header="Import backing track…" Click="ImportBacking_Click" InputGestureText="Ctrl+I"/>
             </MenuItem>
             <MenuItem Header="_Transport">
                 <MenuItem Header="Play / Stop" Click="Play_Click" InputGestureText="Space"/>
@@ -116,10 +126,26 @@
                     <TextBlock Text="Audio Setup" FontSize="28" FontFamily="Palatino Linotype"/>
                     <TextBlock TextWrapping="Wrap" Margin="0,8,0,20" Foreground="{StaticResource MutedBrush}"
                                Text="Wear headphones so the backing track does not leak into the microphone. If your interface already lets you hear yourself (direct monitoring), turn software monitoring off so you do not hear two voices."/>
-                    <TextBlock Text="Microphone" FontWeight="SemiBold"/>
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Style="{StaticResource PlainButton}" Content="Refresh list" Click="RefreshDevices_Click"
+                                FontSize="13" Padding="10,4" ToolTip="Plugged in a USB mic or interface? RMS also notices on its own."/>
+                        <TextBlock Text="Microphone or input" FontWeight="SemiBold" VerticalAlignment="Bottom"/>
+                    </DockPanel>
                     <ComboBox x:Name="InputBox" DisplayMemberPath="Name" SelectionChanged="Input_Changed" Margin="0,6,0,4"/>
-                    <TextBlock x:Name="InputDetail" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,12"/>
-                    <TextBlock Text="Headphones / speakers"/>
+                    <TextBlock x:Name="InputDetail" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                    <StackPanel x:Name="InputChannelRow" Margin="0,0,0,8">
+                        <TextBlock Text="Which input carries your mic or guitar?"/>
+                        <ComboBox x:Name="InputChannelBox" SelectionChanged="InputChannel_Changed" Margin="0,6,0,0" HorizontalAlignment="Left" MinWidth="320">
+                            <ComboBoxItem Content="Both channels (USB mics, most coax/S/PDIF sources)"/>
+                            <ComboBoxItem Content="Input 1 / left only"/>
+                            <ComboBoxItem Content="Input 2 / right only"/>
+                        </ComboBox>
+                    </StackPanel>
+                    <TextBlock Text="Mic level" FontWeight="SemiBold" Margin="0,4,0,6"/>
+                    <ctrl:MeterBar x:Name="SetupMeter" Height="18" Margin="0,0,0,6"/>
+                    <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,16"
+                               Text="Sing or play your loudest part. The bar should reach the amber zone but not turn red. If it barely moves, turn up the gain on your mic or interface (or in Windows Sound settings, Recording, Properties, Levels)."/>
+                    <TextBlock Text="Headphones / speakers" FontWeight="SemiBold"/>
                     <ComboBox x:Name="OutputBox" DisplayMemberPath="Name" SelectionChanged="Output_Changed" Margin="0,6,0,4"/>
                     <TextBlock x:Name="OutputDetail" Foreground="{StaticResource MutedBrush}"/>
                     <TextBlock x:Name="LatencyWarn" Foreground="#E6B84D" TextWrapping="Wrap" Margin="0,8,0,0"/>
@@ -150,33 +176,64 @@
                     <ColumnDefinition Width="280"/>
                 </Grid.ColumnDefinitions>
                 <DockPanel Background="#221A15">
-                    <TextBlock DockPanel.Dock="Top" Text="Tracks" Margin="12,12,12,8" FontWeight="SemiBold"/>
-                    <Button DockPanel.Dock="Bottom" Style="{StaticResource PlainButton}" Content="Add track" Click="AddTrack_Click" Margin="12"/>
+                    <TextBlock DockPanel.Dock="Top" Text="Tracks" Margin="12,12,12,4" FontWeight="SemiBold"/>
+                    <TextBlock DockPanel.Dock="Top" Text="● marks the track R records into." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="12,0,12,8" FontSize="12"/>
+                    <StackPanel DockPanel.Dock="Bottom" Margin="12">
+                        <Button x:Name="ImportBtn" Style="{StaticResource PlainButton}" Content="Import backing track…" Click="ImportBacking_Click" Margin="0,0,0,8"
+                                ToolTip="Ctrl+I — copy a WAV or MP3 into the song. You can also drag a file onto the window."/>
+                        <Button Style="{StaticResource PlainButton}" Content="Add track ▾" Click="AddTrack_Click" Margin="0,0,0,8"
+                                ToolTip="Add a guitar or vocal track to record into">
+                            <Button.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="Guitar track" Click="AddGuitarTrack_Click"/>
+                                    <MenuItem Header="Vocal track" Click="AddVocalTrack_Click"/>
+                                </ContextMenu>
+                            </Button.ContextMenu>
+                        </Button>
+                        <Button Style="{StaticResource PlainButton}" Content="Record into this track" Click="ArmTrack_Click"
+                                ToolTip="Select a track above, then click to make R record into it"/>
+                    </StackPanel>
                     <ListBox x:Name="TrackList" SelectionChanged="TrackList_Changed"/>
                 </DockPanel>
                 <ctrl:TimelinePanel x:Name="Timeline" Grid.Column="1"/>
                 <DockPanel Grid.Column="2" Background="#221A15">
                     <TextBlock DockPanel.Dock="Top" Text="Takes" Margin="12,12,12,4" FontWeight="SemiBold"/>
-                    <TextBlock DockPanel.Dock="Top" Text="Record several passes, then choose best parts." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="12,0,12,8"/>
-                    <StackPanel DockPanel.Dock="Bottom" Margin="12">
-                        <Button Style="{StaticResource PlainButton}" Content="Choose best parts" Click="CompMode_Click" Margin="0,0,0,8"/>
-                        <Button Style="{StaticResource PlainButton}" Content="Split at playhead (S)" Click="Split_Click" Margin="0,0,0,8"/>
-                        <Button Style="{StaticResource PlainButton}" Content="Fade selected" Click="Fade_Click" Margin="0,0,0,8"/>
-                        <Button Style="{StaticResource PlainButton}" Content="Nudge timing later" Click="StretchLate_Click" Margin="0,0,0,8"/>
-                        <Button Style="{StaticResource PlainButton}" Content="Nudge timing earlier" Click="StretchEarly_Click" Margin="0,0,0,8"/>
-                        <CheckBox x:Name="LoopBox" Content="Loop region" Click="Loop_Click"/>
-                        <CheckBox x:Name="LoopRecBox" Content="Loop recording (new take each pass)" Click="LoopRec_Click"/>
-                        <CheckBox x:Name="PunchBox" Content="Punch in/out on the selected range" Click="Punch_Click"/>
+                    <TextBlock DockPanel.Dock="Top" x:Name="TakesHint" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="12,0,12,8" FontSize="12"
+                               Text="Record several passes. Double-click a take to hear it, then choose the best parts."/>
+                    <StackPanel DockPanel.Dock="Bottom" Margin="12,8,12,12">
+                        <Button x:Name="CompBtn" Style="{StaticResource PlainButton}" Content="Choose best parts" Click="CompMode_Click" Margin="0,0,0,6"
+                                ToolTip="Turn on, then drag across the best part of a take on the timeline"/>
+                        <Button Style="{StaticResource PlainButton}" Content="Clear chosen parts" Click="ClearParts_Click" Margin="0,0,0,6" FontSize="14" Padding="10,6"/>
+                        <UniformGrid Columns="2" Margin="0,0,0,6">
+                            <Button Style="{StaticResource PlainButton}" Content="Split (S)" Click="Split_Click" Margin="0,0,3,0" FontSize="14" Padding="8,6"
+                                    ToolTip="Cut the selected clip at the playhead"/>
+                            <Button Style="{StaticResource PlainButton}" Content="Fade" Click="Fade_Click" Margin="3,0,0,0" FontSize="14" Padding="8,6"
+                                    ToolTip="Fade the selected clip in and out so it doesn't click"/>
+                        </UniformGrid>
+                        <UniformGrid Columns="2" Margin="0,0,0,8">
+                            <Button Style="{StaticResource PlainButton}" Content="◀ Earlier" Click="StretchEarly_Click" Margin="0,0,3,0" FontSize="14" Padding="8,6"
+                                    ToolTip="Nudge the selected take or clip 20 ms earlier"/>
+                            <Button Style="{StaticResource PlainButton}" Content="Later ▶" Click="StretchLate_Click" Margin="3,0,0,0" FontSize="14" Padding="8,6"
+                                    ToolTip="Nudge the selected take or clip 20 ms later"/>
+                        </UniformGrid>
+                        <TextBlock Text="Drag on the ruler to mark a range." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,0,0,4"/>
+                        <CheckBox x:Name="LoopBox" Content="Loop the marked range" Click="Loop_Click" Margin="0,0,0,2"/>
+                        <CheckBox x:Name="LoopRecBox" Click="LoopRec_Click" Margin="0,0,0,2">
+                            <TextBlock Text="Loop recording (a new take each pass)" TextWrapping="Wrap"/>
+                        </CheckBox>
+                        <CheckBox x:Name="PunchBox" Click="Punch_Click">
+                            <TextBlock Text="Punch in: re-record only the marked range" TextWrapping="Wrap"/>
+                        </CheckBox>
                     </StackPanel>
                     <ListBox x:Name="TakeList" MouseDoubleClick="Take_DoubleClick"/>
                 </DockPanel>
             </Grid>
 
-            <ScrollViewer x:Name="MixPlace" Visibility="Collapsed" HorizontalScrollBarVisibility="Auto">
+            <ScrollViewer x:Name="MixPlace" Visibility="Collapsed" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                 <StackPanel x:Name="MixerHost" Orientation="Horizontal" Margin="20"/>
             </ScrollViewer>
 
-            <ScrollViewer x:Name="ExportPlace" Visibility="Collapsed">
+            <ScrollViewer x:Name="ExportPlace" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="40,28" MaxWidth="640">
                     <TextBlock Text="Export" FontSize="28" FontFamily="Palatino Linotype"/>
                     <TextBlock TextWrapping="Wrap" Margin="0,8,0,16" Foreground="{StaticResource MutedBrush}"
@@ -185,8 +242,8 @@
                     <ComboBox x:Name="ScopeBox" Margin="0,6,0,12">
                         <ComboBoxItem Content="Whole song" IsSelected="True"/>
                         <ComboBoxItem Content="Selected range"/>
-                        <ComboBoxItem Content="Vocal only"/>
-                        <ComboBoxItem Content="Backing only"/>
+                        <ComboBoxItem Content="Vocals only"/>
+                        <ComboBoxItem Content="Everything except vocals (backing, guitar)"/>
                     </ComboBox>
                     <TextBlock Text="File type"/>
                     <ComboBox x:Name="FormatBox" Margin="0,6,0,16">

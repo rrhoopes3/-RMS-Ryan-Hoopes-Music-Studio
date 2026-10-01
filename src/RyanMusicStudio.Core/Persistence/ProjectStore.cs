@@ -9,6 +9,7 @@ public sealed class RecoveryOffer
     public required string AutosavePath { get; init; }
     public required string? LastGoodPath { get; init; }
     public required IReadOnlyList<string> CompletedTakeFiles { get; init; }
+    public bool AutosaveIsNewer { get; init; }
 }
 
 public sealed class ProjectStore
@@ -88,7 +89,8 @@ public sealed class ProjectStore
                 : "A newer autosave is available. Restore it to keep the work from just before the app closed.",
             AutosavePath = paths.AutosaveFile,
             LastGoodPath = File.Exists(paths.ProjectFile) ? paths.ProjectFile : paths.ProjectBackup,
-            CompletedTakeFiles = completedTakes
+            CompletedTakeFiles = completedTakes,
+            AutosaveIsNewer = autosaveNewer
         };
     }
 
