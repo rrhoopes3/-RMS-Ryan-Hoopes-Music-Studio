@@ -74,7 +74,7 @@ public sealed class ProjectStore
         var paths = new ProjectPaths(root);
         var crash = File.Exists(paths.CrashMarker) || File.Exists(paths.RecordingMarker);
         var autosaveNewer = File.Exists(paths.AutosaveFile) && File.Exists(paths.ProjectFile) &&
-                            File.GetLastWriteTimeUtc(paths.AutosaveFile) > File.GetLastWriteTimeUtc(paths.ProjectFile).AddSeconds(1);
+                            File.GetLastWriteTimeUtc(paths.AutosaveFile) > File.GetLastWriteTimeUtc(paths.ProjectFile);
         var completedTakes = Directory.Exists(paths.TakesDir)
             ? Directory.GetFiles(paths.TakesDir, "*.wav").OrderBy(f => f).ToList()
             : [];

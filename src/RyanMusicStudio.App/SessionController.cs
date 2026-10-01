@@ -37,6 +37,8 @@ public sealed class SessionController : IDisposable
 
     private const string NoSongMessage = "Start a New Vocal Session or open a song first.";
     private string? _heardBeforeTake; // the take the armed track played when R was pressed
+    private bool _shuttingDown;
+    private Task? _testTakeTask;
 
     public event Action? Changed;
     public event Action<string>? Banner;
@@ -259,15 +261,21 @@ public sealed class SessionController : IDisposable
         _engine.SetInputPreview(Place == StudioPlace.Setup); // the tone reopened the output and closed the mic
     }
 
-    public async Task RecordTestTakeAsync()
+    public Task RecordTestTakeAsync()
     {
-        if (BusyRecording("Stop recording first, then record a test.") || _engine.IsTestTaking) return;
+        if (_shuttingDown || BusyRecording("Stop recording first, then record a test.") || _engine.IsTestTaking)
+            return Task.CompletedTask;
+        return _testTakeTask = RunTestTakeAsync();
+    }
+
+    private async Task RunTestTakeAsync()
+    {
         try
         {
             var folder = Path.Combine(Path.GetTempPath(), "RMS", "test-takes");
             SetStatus("Recording a short test. Sing a line…");
             var path = await _engine.RecordTestTakeAsync(TimeSpan.FromSeconds(4), folder);
-            if (_engine.IsTakeActive) return;
+            if (_shuttingDown || _engine.IsTakeActive) return;
             _engine.PlayFile(path);
             SetStatus("That was your test take. If you heard it, you are ready to record a song.");
         }
@@ -275,11 +283,18 @@ public sealed class SessionController : IDisposable
         {
             SetStatus("RMS could not record the test: " + ex.Message + " Check the microphone choice above.");
         }
-        _engine.SetInputPreview(Place == StudioPlace.Setup);
+        finally
+        {
+            _testTakeTask = null;
+            if (!_shuttingDown)
+                _engine.SetInputPreview(Place == StudioPlace.Setup);
+        }
     }
 
     /// <summary>False (and says why) while a take or count-in is running.</summary>
-    public bool CanSwitchSong() => !BusyRecording("Stop recording first (press R or Space), then switch songs.");
+    public bool CanSwitchSong() =>
+        !BusyRecording("Stop recording first (press R or Space), then switch songs.") &&
+        !TakeSaveFailed();
 
     public void NewVocalSession(string name, string parentFolder, double tempo, int num, int den, int sampleRate)
     {
@@ -339,6 +354,7 @@ public sealed class SessionController : IDisposable
     public void Save()
     {
         if (Project == null) return;
+        if (BusyRecording("Stop recording first, then save.") || TakeSaveFailed()) return;
         _store.Save(Project);
         _settings.RememberProject(Project.Name, Project.RootPath);
         SetStatus("Project saved.");
@@ -347,6 +363,7 @@ public sealed class SessionController : IDisposable
     public void SaveAs(string newRoot)
     {
         if (Project == null) return;
+        if (BusyRecording("Stop recording first, then save a copy.") || TakeSaveFailed()) return;
         if (ProjectPaths.LooksLikeProject(newRoot) && !SamePath(newRoot, Project.RootPath))
         {
             SetStatus("That folder already holds an RMS song. Choose an empty folder for the copy.");
@@ -409,7 +426,7 @@ public sealed class SessionController : IDisposable
             return;
         }
         if (_engine.IsRecording)
-            _ = _engine.StopRecordAsync(); // Space ends the take and keeps it
+            _ = StopCurrentTakeAsync(); // Space ends the take and keeps it
         else if (_engine.IsPlaying || _engine.IsTakeActive)
             Stop();
         else
@@ -432,7 +449,7 @@ public sealed class SessionController : IDisposable
         }
         if (_engine.IsRecording)
         {
-            _ = _engine.StopRecordAsync();
+            _ = StopCurrentTakeAsync();
             return;
         }
         if (_engine.IsTakeActive)
@@ -455,7 +472,7 @@ public sealed class SessionController : IDisposable
         }
         catch (Exception ex)
         {
-            _engine.Stop();
+            Stop();
             SetStatus("RMS could not start recording: " + ex.Message);
             return;
         }
@@ -466,8 +483,49 @@ public sealed class SessionController : IDisposable
 
     public void Stop()
     {
-        _engine.Stop();
-        _engine.SetInputPreview(Place == StudioPlace.Setup);
+        if (_engine.IsTakeActive)
+            _ = StopCurrentTakeAsync();
+        else
+        {
+            _engine.Stop();
+            _engine.SetInputPreview(Place == StudioPlace.Setup);
+        }
+    }
+
+    private async Task StopCurrentTakeAsync()
+    {
+        try
+        {
+            // A test take also owns the capture device, but is not a song take. Let its short
+            // recording finish before disposing the engine; skip its preview during shutdown.
+            if (_testTakeTask != null)
+                await _testTakeTask;
+            await _engine.StopRecordAsync();
+        }
+        catch (Exception ex)
+        {
+            var message = "RMS could not save the take: " + ex.Message +
+                " RMS kept its recovery marker and any audio written to the song folder.";
+            SetStatus(message);
+            Banner?.Invoke(message);
+        }
+        finally
+        {
+            if (!_shuttingDown)
+                _engine.SetInputPreview(Place == StudioPlace.Setup);
+        }
+    }
+
+    /// <summary>Quit after a failed take without replacing the song or its recovery files.</summary>
+    public void ExitPreservingRecovery()
+    {
+        if (!_engine.HasTakeFinalizationError)
+            throw new InvalidOperationException("There is no failed take to recover.");
+        _shuttingDown = true;
+        _clock.Stop();
+        _autosave.Stop();
+        _deviceRescan.Stop();
+        _engine.DisposePreservingRecovery();
     }
 
     public void Undo()
@@ -930,6 +988,31 @@ public sealed class SessionController : IDisposable
     public Track? SelectedTrack() =>
         Project?.Tracks.FirstOrDefault(t => t.Id == SelectedTrackId) ?? Project?.Tracks.FirstOrDefault(t => t.Armed);
 
+    /// <summary>Finish the capture and its UI comp edits before writing the last project save.</summary>
+    public async Task ShutdownAsync()
+    {
+        _shuttingDown = true;
+        try
+        {
+            var testTake = _testTakeTask;
+            if (testTake != null)
+                await testTake;
+            await _engine.StopRecordAsync();
+            // TakeCommitted posts comp and punch edits to the dispatcher. This operation is queued
+            // after them, so the final project save includes those edits as well as the raw take.
+            await _ui.InvokeAsync(() => { });
+            if (_engine.HasTakeFinalizationError)
+                throw new InvalidOperationException("A take could not be finalized. RMS kept its recovery marker; the project was not saved over it.");
+            Save();
+            Dispose();
+        }
+        catch
+        {
+            _shuttingDown = false;
+            throw;
+        }
+    }
+
     public void Dispose()
     {
         _clock.Stop();
@@ -961,6 +1044,7 @@ public sealed class SessionController : IDisposable
     private bool LeaveProject()
     {
         if (Project == null) return true;
+        if (TakeSaveFailed()) return false;
         try
         {
             if (Project.Dirty)
@@ -1049,6 +1133,13 @@ public sealed class SessionController : IDisposable
     {
         if (!_engine.IsTakeActive) return false;
         SetStatus(message);
+        return true;
+    }
+
+    private bool TakeSaveFailed()
+    {
+        if (!_engine.HasTakeFinalizationError) return false;
+        SetStatus("The last take could not be saved. Its recovery marker is still on disk. Reopen RMS to recover the audio.");
         return true;
     }
 

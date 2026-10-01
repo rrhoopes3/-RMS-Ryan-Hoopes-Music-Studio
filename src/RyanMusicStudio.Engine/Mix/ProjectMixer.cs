@@ -109,68 +109,68 @@ public sealed class ProjectMixer : ISampleProvider
         if (snap == null)
             return count;
 
-        var frames = count / 2;
-        if (frames * 4 > _masterScratch.Length)
-            frames = _masterScratch.Length / 4;
-
+        var totalFrames = count / 2;
+        var chunkCapacity = Math.Min(_trackScratch.Length, _masterScratch.Length) / 2;
         var playhead = Interlocked.Read(ref _playhead);
         var anySolo = snap.Tracks.Any(t => t.Solo && !t.Mute);
-
-        Array.Clear(_masterScratch, 0, frames * 2);
-
-        foreach (var track in snap.Tracks)
-        {
-            if (ExportMode && track.Role == TrackRole.Reference)
-                continue;
-            if (track.Mute) continue;
-            if (anySolo && !track.Solo) continue;
-
-            Array.Clear(_trackScratch, 0, frames * 2);
-            RenderTrack(track, playhead, frames, snap.SampleRate);
-            track.Effects.Process(_trackScratch.AsSpan(0, frames * 2), frames, 2);
-            MixToMaster(_trackScratch, frames, track.GainLin, track.Pan);
-        }
-
-        if (!ExportMode && snap.Metronome)
-            MixMetronome(playhead, frames, snap);
-
-        if (!ExportMode && snap.SoftwareMonitor && _monitor != null)
-            MixMonitor(frames, snap.MonitorGain);
-
+        var loopEnabled = !ExportMode && snap.Loop.Enabled &&
+                          snap.Loop.StartFrame >= 0 && snap.Loop.EndFrame > snap.Loop.StartFrame;
         var masterGain = AudioMath.DbToLin(snap.Master.GainDb);
         var peakL = 0f;
         var peakR = 0f;
-        for (var i = 0; i < frames; i++)
-        {
-            _masterScratch[i * 2] *= masterGain;
-            _masterScratch[i * 2 + 1] *= masterGain;
-        }
-        if (snap.Master.LimiterEnabled)
-            _limiter.Process(_masterScratch.AsSpan(0, frames * 2), frames);
 
-        for (var i = 0; i < frames; i++)
+        for (var rendered = 0; rendered < totalFrames;)
         {
-            var l = _masterScratch[i * 2];
-            var r = _masterScratch[i * 2 + 1];
-            buffer[offset + i * 2] = l;
-            buffer[offset + i * 2 + 1] = r;
-            peakL = Math.Max(peakL, Math.Abs(l));
-            peakR = Math.Max(peakR, Math.Abs(r));
+            var frames = Math.Min(totalFrames - rendered, chunkCapacity);
+            Array.Clear(_masterScratch, 0, frames * 2);
+
+            foreach (var track in snap.Tracks)
+            {
+                if (ExportMode && track.Role == TrackRole.Reference)
+                    continue;
+                if (track.Mute) continue;
+                if (anySolo && !track.Solo) continue;
+
+                Array.Clear(_trackScratch, 0, frames * 2);
+                RenderTrack(track, playhead, frames, snap.Loop, loopEnabled);
+                track.Effects.Process(_trackScratch.AsSpan(0, frames * 2), frames, 2);
+                MixToMaster(_trackScratch, frames, track.GainLin, track.Pan);
+            }
+
+            if (!ExportMode && snap.Metronome)
+                MixMetronome(playhead, frames, snap, loopEnabled);
+
+            if (!ExportMode && snap.SoftwareMonitor && _monitor != null)
+                MixMonitor(frames, snap.MonitorGain);
+
+            for (var i = 0; i < frames; i++)
+            {
+                _masterScratch[i * 2] *= masterGain;
+                _masterScratch[i * 2 + 1] *= masterGain;
+            }
+            if (snap.Master.LimiterEnabled)
+                _limiter.Process(_masterScratch.AsSpan(0, frames * 2), frames);
+
+            for (var i = 0; i < frames; i++)
+            {
+                var l = _masterScratch[i * 2];
+                var r = _masterScratch[i * 2 + 1];
+                buffer[offset + (rendered + i) * 2] = l;
+                buffer[offset + (rendered + i) * 2 + 1] = r;
+                peakL = Math.Max(peakL, Math.Abs(l));
+                peakR = Math.Max(peakR, Math.Abs(r));
+            }
+
+            playhead = AdvancePlayhead(playhead, frames, snap.Loop, loopEnabled);
+            rendered += frames;
         }
+
         if (peakL > _meters.OutputPeakL) Interlocked.Exchange(ref _meters.OutputPeakL, peakL);
         if (peakR > _meters.OutputPeakR) Interlocked.Exchange(ref _meters.OutputPeakR, peakR);
         if (peakL >= 0.99f || peakR >= 0.99f) Interlocked.Increment(ref _meters.ClipCount);
 
-        var next = playhead + frames;
-        if (!ExportMode && snap.Loop.Enabled && snap.Loop.EndFrame > snap.Loop.StartFrame && next >= snap.Loop.EndFrame)
-        {
-            // If the loop was just moved behind the playhead, jump straight to its start rather than
-            // stepping back one buffer at a time (which plays as stutter).
-            var wasInside = playhead >= snap.Loop.StartFrame && playhead < snap.Loop.EndFrame;
-            next = wasInside ? snap.Loop.StartFrame + (next - snap.Loop.EndFrame) : snap.Loop.StartFrame;
-        }
-        Interlocked.Exchange(ref _playhead, next);
-        return frames * 2;
+        Interlocked.Exchange(ref _playhead, playhead);
+        return totalFrames * 2;
     }
 
     public static MixSnapshot Build(ProjectDocument project, SampleCache cache, bool metronome, bool softwareMonitor, float monitorGain)
@@ -226,38 +226,61 @@ public sealed class ProjectMixer : ISampleProvider
         };
     }
 
-    private void RenderTrack(TrackMix track, long playhead, int frames, int sampleRate)
+    private static int FramesToRender(ref long playhead, int remaining, LoopRegion loop, bool loopEnabled)
     {
-        foreach (var bound in track.Spans)
-        {
-            var span = bound.Span;
-            var overlap = TimelineMath.OverlapLength(playhead, frames, span.TimelineStart, span.Length);
-            if (overlap <= 0) continue;
-            var destStart = (int)Math.Max(0, span.TimelineStart - playhead);
-            var srcFrame = span.SourceOffset + Math.Max(0, playhead - span.TimelineStart);
-            var audio = bound.Audio;
-            var ratio = span.StretchRatio <= 0 ? 1.0 : span.StretchRatio;
+        if (!loopEnabled) return remaining;
+        if (playhead >= loop.EndFrame) playhead = loop.StartFrame;
+        return (int)Math.Min(remaining, loop.EndFrame - playhead);
+    }
 
-            for (var i = 0; i < overlap; i++)
+    private static long AdvancePlayhead(long playhead, int frames, LoopRegion loop, bool loopEnabled)
+    {
+        if (!loopEnabled) return playhead + frames;
+        if (playhead >= loop.EndFrame) playhead = loop.StartFrame;
+        var untilEnd = loop.EndFrame - playhead;
+        return frames < untilEnd
+            ? playhead + frames
+            : loop.StartFrame + (frames - untilEnd) % (loop.EndFrame - loop.StartFrame);
+    }
+
+    private void RenderTrack(TrackMix track, long playhead, int frames, LoopRegion loop, bool loopEnabled)
+    {
+        for (var rendered = 0; rendered < frames;)
+        {
+            var segmentFrames = FramesToRender(ref playhead, frames - rendered, loop, loopEnabled);
+            foreach (var bound in track.Spans)
             {
-                var timeline = playhead + destStart + i;
-                var gain = span.FadeGain(timeline);
-                var src = srcFrame + (long)Math.Round(i * ratio);
-                if (src < 0 || src >= audio.Frames) continue;
-                float sl, sr;
-                if (audio.Channels == 1)
+                var span = bound.Span;
+                var overlap = TimelineMath.OverlapLength(playhead, segmentFrames, span.TimelineStart, span.Length);
+                if (overlap <= 0) continue;
+                var destStart = (int)Math.Max(0, span.TimelineStart - playhead);
+                var srcFrame = span.SourceOffset + Math.Max(0, playhead - span.TimelineStart);
+                var audio = bound.Audio;
+                var ratio = span.StretchRatio <= 0 ? 1.0 : span.StretchRatio;
+
+                for (var i = 0; i < overlap; i++)
                 {
-                    sl = sr = audio.Interleaved[src];
+                    var timeline = playhead + destStart + i;
+                    var gain = span.FadeGain(timeline);
+                    var src = srcFrame + (long)Math.Round(i * ratio);
+                    if (src < 0 || src >= audio.Frames) continue;
+                    float sl, sr;
+                    if (audio.Channels == 1)
+                    {
+                        sl = sr = audio.Interleaved[src];
+                    }
+                    else
+                    {
+                        sl = audio.Interleaved[src * audio.Channels];
+                        sr = audio.Interleaved[src * audio.Channels + 1];
+                    }
+                    var di = (rendered + destStart + i) * 2;
+                    _trackScratch[di] += sl * gain;
+                    _trackScratch[di + 1] += sr * gain;
                 }
-                else
-                {
-                    sl = audio.Interleaved[src * audio.Channels];
-                    sr = audio.Interleaved[src * audio.Channels + 1];
-                }
-                var di = (destStart + i) * 2;
-                _trackScratch[di] += sl * gain;
-                _trackScratch[di + 1] += sr * gain;
             }
+            playhead += segmentFrames;
+            rendered += segmentFrames;
         }
     }
 
@@ -273,21 +296,27 @@ public sealed class ProjectMixer : ISampleProvider
         }
     }
 
-    private void MixMetronome(long playhead, int frames, MixSnapshot snap)
+    private void MixMetronome(long playhead, int frames, MixSnapshot snap, bool loopEnabled)
     {
         var beat = TimelineMath.SamplesPerBeat(snap.SampleRate, snap.TempoBpm);
         if (beat <= 0) return;
         var barBeats = snap.TimeSignature.Numerator;
-        for (var i = 0; i < frames; i++)
+        for (var rendered = 0; rendered < frames;)
         {
-            var frame = playhead + i;
-            var intoBeat = frame % beat;
-            if (intoBeat < 0 || intoBeat >= _click.Length) continue;
-            var beatIndex = frame / beat;
-            var accent = beatIndex % barBeats == 0 ? 0.7f : 0.35f;
-            var s = _click[intoBeat] * accent;
-            _masterScratch[i * 2] += s;
-            _masterScratch[i * 2 + 1] += s;
+            var segmentFrames = FramesToRender(ref playhead, frames - rendered, snap.Loop, loopEnabled);
+            for (var i = 0; i < segmentFrames; i++)
+            {
+                var frame = playhead + i;
+                var intoBeat = frame % beat;
+                if (intoBeat < 0 || intoBeat >= _click.Length) continue;
+                var beatIndex = frame / beat;
+                var accent = beatIndex % barBeats == 0 ? 0.7f : 0.35f;
+                var s = _click[intoBeat] * accent;
+                _masterScratch[(rendered + i) * 2] += s;
+                _masterScratch[(rendered + i) * 2 + 1] += s;
+            }
+            playhead += segmentFrames;
+            rendered += segmentFrames;
         }
     }
 
