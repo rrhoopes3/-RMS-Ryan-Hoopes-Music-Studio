@@ -37,7 +37,8 @@ public sealed class AudioEngine : IDisposable
     private readonly MediaImporter _importer = new();
     private readonly ProjectStore _store = new();
     private readonly object _gate = new();
-    private readonly FloatRingBuffer _captureRing = new(48000 * 8);
+    private readonly SemaphoreSlim _finalizeGate = new(1, 1);
+    private FloatRingBuffer _captureRing = new(48000 * 8);
     private readonly FloatRingBuffer _monitorRing = new(48000 * 4);
     private readonly float[] _captureConvert = new float[16384];
     private readonly float[] _captureMono = new float[16384];
@@ -64,6 +65,9 @@ public sealed class AudioEngine : IDisposable
     private volatile bool _countIn;
     private volatile bool _testTakeRunning;
     private volatile bool _takeActive; // from R until the take is stopped, including loop-pass rolls
+    private volatile bool _rollCapture;
+    private volatile bool _stopRequested;
+    private volatile Exception? _takeFinalizationError;
     private long _recordStartPlayhead;
     private long _countInRemaining;
     private string? _inProgressTakePath;
@@ -85,6 +89,7 @@ public sealed class AudioEngine : IDisposable
     public bool IsCountingIn => _countIn;
     public bool IsTestTaking => _testTakeRunning;
     public bool IsTakeActive => _takeActive || _recording || _countIn;
+    public bool HasTakeFinalizationError => _takeFinalizationError != null;
     public bool IsPlaying => _playing;
     public bool SoftwareMonitor
     {
@@ -155,8 +160,8 @@ public sealed class AudioEngine : IDisposable
 
     public void Stop()
     {
-        if (_recording)
-            _ = StopRecordAsync();
+        if (IsTakeActive || _writer != null)
+            _ = StopRecordAndReportAsync();
         else
             StopTransport(safeFinalize: false);
         Status("Stopped");
@@ -164,6 +169,8 @@ public sealed class AudioEngine : IDisposable
 
     public void StartRecord()
     {
+        if (_takeFinalizationError != null)
+            throw new InvalidOperationException("The previous take could not be saved. Reopen the song to recover its audio.", _takeFinalizationError);
         if (_project == null) throw new InvalidOperationException("Open a project first.");
         _armedTrack = _project.Tracks.FirstOrDefault(t => t.Armed) ??
                       _project.Tracks.FirstOrDefault(t => t.Role == TrackRole.Vocal);
@@ -181,6 +188,7 @@ public sealed class AudioEngine : IDisposable
             playhead = Math.Max(0, playhead);
 
         SeekInternal(playhead);
+        _stopRequested = false;
         _takeActive = true;
         _countInRemaining = _project.CountInBars * bar;
         _countIn = _countInRemaining > 0;
@@ -193,12 +201,15 @@ public sealed class AudioEngine : IDisposable
 
     public async Task<RecordedTakeResult?> StopRecordAsync()
     {
-        RecordedTakeResult? result = null;
-        if (_recording || _writer != null)
-            result = await FinalizeTakeAsync().ConfigureAwait(false);
-        StopTransport(safeFinalize: false);
-        _takeActive = false;
-        return result;
+        _stopRequested = true;
+        try
+        {
+            return await FinalizeTakeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            StopTransport(safeFinalize: false);
+        }
     }
 
     public async Task<string> RecordTestTakeAsync(TimeSpan duration, string folder)
@@ -301,7 +312,7 @@ public sealed class AudioEngine : IDisposable
         if (_recording && _project != null)
         {
             if (_project.Punch.Enabled && playhead >= _project.Punch.EndFrame && _project.Punch.EndFrame > _project.Punch.StartFrame)
-                _ = StopRecordAsync();
+                _ = StopRecordAndReportAsync();
             else if (_project.Loop.Enabled && _project.LoopRecording &&
                      _project.Loop.EndFrame > _project.Loop.StartFrame &&
                      wrapped && !_loopPassPending)
@@ -320,6 +331,20 @@ public sealed class AudioEngine : IDisposable
     public void Dispose()
     {
         StopTransport(true);
+        DisposeDevices();
+    }
+
+    /// <summary>Close after a failed take without clearing its recovery marker or retrying its writer.</summary>
+    public void DisposePreservingRecovery()
+    {
+        if (_takeFinalizationError == null)
+            throw new InvalidOperationException("There is no failed take to recover.");
+        StopTransport(false);
+        DisposeDevices();
+    }
+
+    private void DisposeDevices()
+    {
         _watcher.Dispose();
         _devices.Dispose();
         _inputDevice?.Dispose();
@@ -334,21 +359,35 @@ public sealed class AudioEngine : IDisposable
 
     private async Task StopAtLoopEndAsync()
     {
-        if (await StopRecordAsync().ConfigureAwait(false) != null)
-            Status("Take saved at the end of the loop. Tick Loop recording to record pass after pass.");
+        try
+        {
+            if (await StopRecordAsync().ConfigureAwait(false) != null)
+                Status("Take saved at the end of the loop. Tick Loop recording to record pass after pass.");
+        }
+        catch (Exception ex)
+        {
+            Status("Could not save the take: " + ex.Message);
+        }
+    }
+
+    private async Task StopRecordAndReportAsync()
+    {
+        try { await StopRecordAsync().ConfigureAwait(false); }
+        catch (Exception ex) { Status("Could not save the take: " + ex.Message); }
     }
 
     private async Task RollLoopTakeAsync()
     {
         try
         {
-            await FinalizeTakeAsync().ConfigureAwait(false);
-            if (!_takeActive) return; // stopped while the last pass was being saved
+            await FinalizeTakeAsync(preserveCaptureForNextTake: !_stopRequested).ConfigureAwait(false);
+            if (!_takeActive || _stopRequested) return; // stopped while the last pass was being saved
             _recordStartPlayhead = _project!.Loop.StartFrame;
-            BeginTakeFile();
+            BeginTakeFile(preserveQueuedCapture: true);
         }
         catch (Exception ex)
         {
+            StopTransport(safeFinalize: false);
             Status("Could not start the next loop take: " + ex.Message);
         }
         finally
@@ -357,109 +396,164 @@ public sealed class AudioEngine : IDisposable
         }
     }
 
-    private void BeginTakeFile()
+    private void BeginTakeFile(bool preserveQueuedCapture = false)
     {
-        if (_project == null || _armedTrack == null) return;
+        var project = _project;
+        if (project == null || _armedTrack == null) return;
+        var paths = new ProjectPaths(project.RootPath);
+        paths.EnsureLayout();
+        var serial = Interlocked.Increment(ref _takeSerial);
+        var name = $"take-{serial:000}-{DateTime.Now:HHmmss}.wav";
+        var path = Path.Combine(paths.TakesDir, name);
+        _store.MarkRecording(project.RootPath, path);
+        IncrementalWavWriter writer;
+        try { writer = new IncrementalWavWriter(path, project.SampleRate, 1); }
+        catch (Exception ex)
+        {
+            _takeFinalizationError = ex;
+            throw;
+        }
+        var cts = new CancellationTokenSource();
+        bool abandoned;
         lock (_gate)
         {
-            var paths = new ProjectPaths(_project.RootPath);
-            paths.EnsureLayout();
-            _takeSerial++;
-            var name = $"take-{_takeSerial:000}-{DateTime.Now:HHmmss}.wav";
-            _inProgressTakePath = Path.Combine(paths.TakesDir, name);
-            _store.MarkRecording(_project.RootPath, _inProgressTakePath);
-            _writer = new IncrementalWavWriter(_inProgressTakePath, _project.SampleRate, 1);
-            _writerCts = new CancellationTokenSource();
-            // The take starts now: drop count-in and earlier-playback audio still queued, and pin
-            // the timeline position at the same moment (before the writer task starts consuming).
-            _captureRing.DiscardAll();
-            _recordStartPlayhead = _mixer?.PlayheadFrames ?? _recordStartPlayhead;
-            _takeResampler.Reset();
-            _writerTask = Task.Run(() => WriterLoop(_writerCts.Token));
-            _recording = true;
+            abandoned = _stopRequested;
+            if (!abandoned)
+            {
+                _inProgressTakePath = path;
+                _writer = writer;
+                _writerCts = cts;
+                // The take starts now: drop count-in and earlier-playback audio still queued,
+                // then pin its timeline position before the writer consumes the queue.
+                if (!preserveQueuedCapture)
+                    _captureRing.DiscardAll();
+                _recordStartPlayhead = preserveQueuedCapture
+                    ? project.Loop.StartFrame
+                    : _mixer?.PlayheadFrames ?? _recordStartPlayhead;
+                _takeResampler.Reset();
+                var ring = _captureRing;
+                _writerTask = Task.Run(() => WriterLoop(ring, writer, cts.Token));
+                _rollCapture = false;
+                _recording = true;
+            }
         }
-    }
-
-    private async Task<RecordedTakeResult?> FinalizeTakeAsync()
-    {
-        IncrementalWavWriter? writer;
-        string? path;
-        lock (_gate)
-        {
-            _recording = false;
-            writer = _writer;
-            path = _inProgressTakePath;
-            _writer = null;
-            _inProgressTakePath = null;
-        }
-
-        _writerCts?.Cancel();
-        if (_writerTask != null)
-        {
-            try { await _writerTask.ConfigureAwait(false); }
-            catch (OperationCanceledException) { }
-        }
-
-        if (writer == null || path == null || _project == null || _armedTrack == null)
-            return null;
-
-        writer.FinalizeHeader();
-        var frames = writer.FramesWritten;
+        if (!abandoned) return;
         writer.Dispose();
-        if (_project != null)
-            _store.ClearRecordingMarker(_project.RootPath);
-
-        if (frames < _project.SampleRate / 20)
-        {
-            Status("That take was too short to keep.");
-            return null;
-        }
-
-        var take = new Take
-        {
-            Name = $"Take {NextTakeNumber(_armedTrack)}",
-            RelativePath = Path.Combine("media", "takes", Path.GetFileName(path)).Replace('\\', '/'),
-            StartFrame = Math.Max(0, _recordStartPlayhead - ReportedCompensationFrames),
-            LengthFrames = frames,
-            Channels = 1,
-            Committed = true,
-            RecordedUtc = DateTimeOffset.UtcNow
-        };
-        if (_project.Punch.Enabled)
-        {
-            take.StartFrame = _project.Punch.StartFrame;
-            take.LengthFrames = Math.Min(frames, Math.Max(1, _project.Punch.EndFrame - _project.Punch.StartFrame));
-        }
-
-        _armedTrack.Takes.Add(take);
-        _armedTrack.AuditionTakeId = take.Id;
-        _project.Touch();
-        _cache.LoadAbsolute(take.Id, path);
-        RebuildMix();
-        _store.Autosave(_project);
-        var result = new RecordedTakeResult { Take = take, AbsolutePath = path };
-        TakeCommitted?.Invoke(result);
-        Status("Take saved to disk.");
-        return result;
+        cts.Dispose();
+        File.Delete(path);
+        _store.ClearRecordingMarker(project.RootPath);
     }
 
-    private void WriterLoop(CancellationToken token)
+    private async Task<RecordedTakeResult?> FinalizeTakeAsync(bool preserveCaptureForNextTake = false)
+    {
+        await _finalizeGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_takeFinalizationError != null)
+                throw new InvalidOperationException("The previous take could not be saved. Reopen the song to recover its audio.", _takeFinalizationError);
+
+            IncrementalWavWriter? writer;
+            string? path;
+            CancellationTokenSource? cts;
+            Task? writerTask;
+            lock (_gate)
+            {
+                _recording = false;
+                writer = _writer;
+                path = _inProgressTakePath;
+                cts = _writerCts;
+                writerTask = _writerTask;
+                _writer = null;
+                _inProgressTakePath = null;
+                _writerCts = null;
+                _writerTask = null;
+                // A loop pass gets a fresh queue. The old writer can now drain its queue while
+                // the capture callback keeps filling the next pass's queue.
+                _rollCapture = preserveCaptureForNextTake && !_stopRequested && writer != null;
+                if (_rollCapture)
+                    _captureRing = new FloatRingBuffer(48000 * 8);
+            }
+
+            if (writer == null || path == null || _project == null || _armedTrack == null)
+                return null;
+
+            try
+            {
+                cts?.Cancel();
+                if (writerTask != null)
+                    await writerTask.ConfigureAwait(false);
+                writer.FinalizeHeader();
+                var frames = writer.FramesWritten;
+                writer.Dispose();
+
+                if (frames < _project.SampleRate / 20)
+                {
+                    _store.ClearRecordingMarker(_project.RootPath);
+                    Status("That take was too short to keep.");
+                    return null;
+                }
+
+                var take = new Take
+                {
+                    Name = $"Take {NextTakeNumber(_armedTrack)}",
+                    RelativePath = Path.Combine("media", "takes", Path.GetFileName(path)).Replace('\\', '/'),
+                    StartFrame = Math.Max(0, _recordStartPlayhead - ReportedCompensationFrames),
+                    LengthFrames = frames,
+                    Channels = 1,
+                    Committed = true,
+                    RecordedUtc = DateTimeOffset.UtcNow
+                };
+                if (_project.Punch.Enabled)
+                {
+                    take.StartFrame = _project.Punch.StartFrame;
+                    take.LengthFrames = Math.Min(frames, Math.Max(1, _project.Punch.EndFrame - _project.Punch.StartFrame));
+                }
+
+                _armedTrack.Takes.Add(take);
+                _armedTrack.AuditionTakeId = take.Id;
+                _project.Touch();
+                _cache.LoadAbsolute(take.Id, path);
+                RebuildMix();
+                _store.Autosave(_project);
+                var result = new RecordedTakeResult { Take = take, AbsolutePath = path };
+                TakeCommitted?.Invoke(result);
+                Status("Take saved to disk.");
+                // Keep the marker until both project metadata and commit notifications succeed.
+                _store.ClearRecordingMarker(_project.RootPath);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _takeFinalizationError = ex;
+                writer.Dispose();
+                throw;
+            }
+            finally
+            {
+                cts?.Dispose();
+            }
+        }
+        finally
+        {
+            _finalizeGate.Release();
+        }
+    }
+
+    private void WriterLoop(FloatRingBuffer ring, IncrementalWavWriter writer, CancellationToken token)
     {
         var buf = new float[2048];
         // The ring already holds mono at the mic's rate; leave room to upsample a full read
         // (e.g. a 16 kHz USB mic into a 48 kHz song) so no audio is cut off.
         var mono = new float[2048 * 6 + 2];
-        while (!token.IsCancellationRequested)
+        while (true)
         {
-            var n = _captureRing.Read(buf);
+            var n = ring.Read(buf);
             if (n <= 0)
             {
+                if (token.IsCancellationRequested) break;
                 Thread.Sleep(4);
                 continue;
             }
-
-            var writer = _writer;
-            if (writer == null) continue;
 
             var frames = ResampleToProject(buf.AsSpan(0, n), 1, mono);
 
@@ -472,7 +566,7 @@ public sealed class AudioEngine : IDisposable
 
             writer.WriteInterleavedFloat(mono.AsSpan(0, frames));
         }
-        _writer?.Flush();
+        writer.Flush();
     }
 
     private int ResampleToProject(ReadOnlySpan<float> source, int channels, float[] dest)
@@ -550,7 +644,11 @@ public sealed class AudioEngine : IDisposable
         // input channel of a stereo/coax/interface input, or the mix of all channels.
         var mono = _captureMono.AsSpan(0, frames);
         var (level, raw) = ToMono(_captureConvert, frames, _captureChannels, _config.InputChannel, mono);
-        _captureRing.Write(mono);
+        lock (_gate)
+        {
+            if (_recording || _rollCapture || _testTakeRunning)
+                _captureRing.Write(mono);
+        }
         if (_config.SoftwareMonitor)
             WriteMonitor(mono);
         // The meter shows what is recorded; the clip light watches the raw input, where clipping happens.
@@ -697,17 +795,23 @@ public sealed class AudioEngine : IDisposable
     {
         _playing = false;
         _countIn = false;
-        _takeActive = false;
-        if (safeFinalize && _recording)
+        if (safeFinalize)
+            _stopRequested = true;
+        try
         {
-            try { FinalizeTakeAsync().GetAwaiter().GetResult(); }
-            catch { /* keep going */ }
+            if (safeFinalize)
+                FinalizeTakeAsync().GetAwaiter().GetResult();
         }
-        try { _output?.Stop(); } catch { }
-        _output?.Dispose();
-        _output = null;
-        _outputSource = null;
-        StopCapture();
+        finally
+        {
+            _takeActive = false;
+            _rollCapture = false;
+            try { _output?.Stop(); } catch { }
+            _output?.Dispose();
+            _output = null;
+            _outputSource = null;
+            StopCapture();
+        }
     }
 
     private void StopCapture()

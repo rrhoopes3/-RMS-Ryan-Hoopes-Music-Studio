@@ -17,6 +17,8 @@ public partial class MainWindow : Window
     private bool _syncing;
     private int _refreshQueued;
     private bool _focusFromKeyboard;
+    private bool _closePending;
+    private bool _closeReady;
     private ProjectDocument? _mixerProject;
     private string _mixerTracks = "";
 
@@ -507,9 +509,53 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnClosing(object sender, System.ComponentModel.CancelEventArgs e)
+    private async void OnClosing(object sender, System.ComponentModel.CancelEventArgs e)
     {
-        _session.Save();
-        _session.Dispose();
+        if (_closeReady) return;
+        e.Cancel = true;
+        if (_closePending) return;
+        _closePending = true;
+        IsEnabled = false;
+        try
+        {
+            await _session.ShutdownAsync();
+            _closeReady = true;
+            Close();
+        }
+        catch (Exception ex)
+        {
+            if (_session.Engine.HasTakeFinalizationError)
+            {
+                var exit = MessageBox.Show(
+                    "RMS could not finish saving the take: " + ex.Message +
+                    "\n\nRMS kept its recovery marker and any audio written to the song folder. " +
+                    "Exit without saving the current project? You can try to recover the take next time RMS opens.",
+                    "RMS — take recovery", MessageBoxButton.YesNo, MessageBoxImage.Warning,
+                    MessageBoxResult.No);
+                if (exit == MessageBoxResult.Yes)
+                {
+                    try
+                    {
+                        _session.ExitPreservingRecovery();
+                        _closeReady = true;
+                        Close();
+                        return;
+                    }
+                    catch (Exception exitError)
+                    {
+                        MessageBox.Show("RMS could not close safely: " + exitError.Message,
+                            "RMS — close cancelled", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                }
+                _closePending = false;
+                IsEnabled = true;
+                return;
+            }
+            _closePending = false;
+            IsEnabled = true;
+            MessageBox.Show("RMS could not finish saving the song: " + ex.Message +
+                "\n\nThe window is still open so the recovery files are preserved.",
+                "RMS — close cancelled", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 }
