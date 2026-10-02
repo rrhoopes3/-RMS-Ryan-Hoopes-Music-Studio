@@ -1,4 +1,8 @@
+#if PORTABLE
+using System.Diagnostics;
+#else
 using NAudio.MediaFoundation;
+#endif
 using NAudio.Wave;
 using RyanMusicStudio.Core.Model;
 using RyanMusicStudio.Core.Timeline;
@@ -49,9 +53,32 @@ public sealed class MixExporter
             WritePcmWav(tempWav, stereo, project.SampleRate, 16);
             try
             {
+#if PORTABLE
+                var psi = new ProcessStartInfo("ffmpeg")
+                {
+                    UseShellExecute = false, RedirectStandardError = true, CreateNoWindow = true
+                };
+                foreach (var arg in new[] { "-nostdin", "-v", "error", "-y", "-i", tempWav,
+                             "-codec:a", "libmp3lame", "-b:a", "192k", destination })
+                    psi.ArgumentList.Add(arg);
+                Process process;
+                try { process = Process.Start(psi) ?? throw new InvalidOperationException("FFmpeg did not start."); }
+                catch (System.ComponentModel.Win32Exception ex)
+                {
+                    throw new InvalidOperationException("FFmpeg is required for MP3 export on macOS and Linux. Install ffmpeg and reopen RMS.", ex);
+                }
+                using (process)
+                {
+                    var error = process.StandardError.ReadToEnd();
+                    process.WaitForExit();
+                    if (process.ExitCode != 0)
+                        throw new InvalidOperationException("MP3 export failed: " + error);
+                }
+#else
                 MediaFoundationApi.Startup();
                 using var reader = new MediaFoundationReader(tempWav);
                 MediaFoundationEncoder.EncodeToMp3(reader, destination, 192000);
+#endif
             }
             finally
             {

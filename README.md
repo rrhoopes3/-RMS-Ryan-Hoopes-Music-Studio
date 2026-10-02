@@ -1,8 +1,8 @@
 # RMS
 
-**Ryan Music Studio** — a Windows app for a singer who wants to record vocals over a backing track and export a song, without learning a big studio program.
+**Ryan Music Studio** — a desktop app for a singer who wants to record vocals over a backing track and export a song, without learning a big studio program.
 
-RMS runs on **Windows 11**, works **offline**, and needs **no account**. Your audio stays on this computer unless you export a file yourself.
+RMS runs on **Windows 11, macOS, and Linux**, works **offline**, and needs **no account**. Your audio stays on this computer unless you export a file yourself.
 
 ## First session
 
@@ -15,7 +15,9 @@ RMS runs on **Windows 11**, works **offline**, and needs **no account**. Your au
 
 ## Download and run
 
-Download the newest **RMS.exe** from [ryanhoopesmusic.com/rmstudio](https://ryanhoopesmusic.com/rmstudio/) or the [latest release](https://github.com/rrhoopes3/-RMS-Ryan-Hoopes-Music-Studio/releases/latest), then double-click it. No installer is required.
+On Windows, download the newest **RMS.exe** from [ryanhoopesmusic.com/rmstudio](https://ryanhoopesmusic.com/rmstudio/) or the [latest release](https://github.com/rrhoopes3/-RMS-Ryan-Hoopes-Music-Studio/releases/latest), then double-click it. No installer is required.
+
+On macOS and Linux, build the portable desktop app with [`scripts/build-desktop.sh`](scripts/build-desktop.sh). It produces a macOS `.app` ZIP or a Linux tarball under `dist/`. See [desktop build and use](docs/DESKTOP.md) for requirements and the current platform differences.
 
 A local build also writes:
 
@@ -31,7 +33,7 @@ That copies the portable build to `%LOCALAPPDATA%\RMS` and adds a Start Menu sho
 
 ## Build from source
 
-Requirements: Windows 11 64-bit, [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
+Windows build requirements: Windows 11 64-bit, [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
@@ -52,6 +54,13 @@ WASAPI hardware spike (lists devices; optional live mic test):
 dotnet run --project src\RyanMusicStudio.Spike\RyanMusicStudio.Spike.csproj -- --list-only
 ```
 
+macOS and Linux build requirements: [.NET 8 and 10 SDKs](https://dotnet.microsoft.com/download), plus `ffmpeg` on `PATH` for WAV/MP3 import and MP3 export. WAV export needs no external codec. On the target OS, run:
+
+```bash
+dotnet test tests/RyanMusicStudio.Tests/RyanMusicStudio.Tests.csproj -f net8.0 -c Release
+scripts/build-desktop.sh
+```
+
 ## Keyboard
 
 | Key | Action |
@@ -70,12 +79,12 @@ Shortcuts also appear in the menus.
 
 ## What release 1 does
 
-- WASAPI microphone and headphone setup, live meters, software monitoring, test take
+- Microphone and headphone setup, live meters, software monitoring, test take
 - Vocal-over-beat projects, drag-in WAV/MP3, take lanes, comps, non-destructive edits
 - Built-in vocal effects (HPF, EQ, compressor, de-esser, reverb, delay, gate) and a master limiter
-- Save / autosave / crash recovery, export WAV 16/24 and MP3 (Windows Media Foundation)
+- Save / autosave / crash recovery, export WAV 16/24 and MP3 (Windows Media Foundation on Windows, FFmpeg on macOS/Linux)
 
-Low-latency path: **WASAPI Exclusive**. ASIO is not shipped.
+On Windows the low-latency path is **WASAPI Exclusive**. On macOS and Linux RMS uses PortAudio's native Core Audio, ALSA, or PulseAudio backend. ASIO is not shipped.
 
 ## What release 1 does not do
 

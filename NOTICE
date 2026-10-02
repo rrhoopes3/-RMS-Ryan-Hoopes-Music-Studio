@@ -22,6 +22,28 @@ Windows Media Foundation
 Inbox Windows 10/11 component used at runtime for MP3 decode and MP3 encode.
 Not copied into this repository. No LAME / GPL MP3 encoder is bundled.
 
+Avalonia 12.1.3 (macOS/Linux app)
+Copyright (c) AvaloniaUI
+License: MIT
+https://github.com/AvaloniaUI/Avalonia
+
+PortAudioSharp2 1.0.6 (macOS/Linux app)
+License: Apache-2.0
+https://github.com/csukuangfj/PortAudioSharp2
+
+PortAudio (native library bundled by PortAudioSharp2)
+Copyright (c) Ross Bencina, Phil Burk and contributors
+License: MIT-style PortAudio license
+https://github.com/PortAudio/portaudio
+
+.NET 10 (self-contained macOS/Linux publish)
+Copyright (c) Microsoft Corporation
+License: MIT / Microsoft redistributable terms for the runtime
+https://github.com/dotnet/runtime
+
+FFmpeg (optional, installed separately by the user)
+Used for macOS/Linux import and MP3 export. No FFmpeg binary is bundled.
+
 xUnit.net (tests only)
 License: Apache-2.0
 

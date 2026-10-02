@@ -1,0 +1,55 @@
+name: Desktop builds
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Test shared model and portable audio engine
+        run: dotnet test tests/RyanMusicStudio.Tests/RyanMusicStudio.Tests.csproj -f net8.0 -c Release
+      - name: Build macOS packages
+        if: runner.os == 'macOS'
+        run: |
+          RID=osx-arm64 scripts/build-desktop.sh
+          RID=osx-x64 scripts/build-desktop.sh
+      - name: Build Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          RID=linux-x64 scripts/build-desktop.sh
+          RID=linux-arm64 scripts/build-desktop.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RMS-${{ runner.os }}
+          path: |
+            dist/RMS-*.zip
+            dist/RMS-*.tar.gz
+          if-no-files-found: error
+
+  windows-regression:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Test original Windows app
+        run: dotnet test tests/RyanMusicStudio.Tests/RyanMusicStudio.Tests.csproj -f net8.0-windows -c Release
+      - name: Build WPF app
+        run: dotnet build src/RyanMusicStudio.App/RyanMusicStudio.App.csproj -c Release

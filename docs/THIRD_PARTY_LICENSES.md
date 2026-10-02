@@ -10,16 +10,21 @@ RMS — Ryan Music Studio ships original application source plus the dependencie
 | NAudio.WinMM | 2.2.1 | MIT | Transitive; not the primary record path |
 | NAudio.Asio | 2.2.1 | MIT | Transitive NuGet only. **RMS does not ship or enable ASIO.** Steinberg ASIO SDK terms are a distribution risk. |
 | .NET 8 / WPF | 8.x | MIT + runtime redistributable | App UI and runtime |
+| Avalonia | 12.1.3 | MIT | Shared macOS/Linux desktop UI |
+| PortAudioSharp2 | 1.0.6 | Apache-2.0 | Managed PortAudio bindings |
+| PortAudio | bundled by PortAudioSharp2 | MIT-style | macOS/Linux audio streams |
+| .NET 10 | 10.x | MIT + runtime redistributable | Self-contained macOS/Linux app runtime |
+| FFmpeg | installed separately | varies by build | macOS/Linux WAV/MP3 import and MP3 export |
 | Windows Media Foundation | OS | Windows component | MP3 decode/encode. Not vendored. |
 | xUnit / test SDK | 2.9 / 17.11 | Apache-2.0 / MIT | Automated tests |
 
 ## MP3
 
-RMS does **not** vendor LAME or any GPL encoder. Exporting MP3 uses the encoder already present in Windows Media Foundation on Windows 11. If a PC cannot encode MP3, export WAV 16-bit or 24-bit instead.
+RMS does **not** vendor LAME or any GPL encoder. Windows MP3 export uses the encoder already present in Windows Media Foundation. macOS/Linux MP3 export launches the user's separate `ffmpeg` executable; its licensing depends on the installed build. WAV 16-bit or 24-bit export works without FFmpeg.
 
 ## GPL / LGPL
 
-No GPL or LGPL library is linked into `RMS.exe`.
+No GPL or LGPL library is linked into the RMS packages by this repository. FFmpeg is not bundled.
 
 ## Sample audio
 

@@ -1,4 +1,11 @@
+#if PORTABLE
+using MMDevice = RyanMusicStudio.Engine.Portable.PortableAudioDevice;
+using WasapiOut = RyanMusicStudio.Engine.Portable.PortableAudioOutput;
+using WasapiCapture = RyanMusicStudio.Engine.Portable.PortableAudioCapture;
+using AudioClientShareMode = RyanMusicStudio.Engine.Portable.PortableShareMode;
+#else
 using NAudio.CoreAudioApi;
+#endif
 using NAudio.Wave;
 using RyanMusicStudio.Core.Model;
 using RyanMusicStudio.Core.Persistence;

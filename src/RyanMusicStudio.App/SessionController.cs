@@ -1,7 +1,11 @@
 using System.IO;
+#if PORTABLE
+using Avalonia.Threading;
+#else
 using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Win32;
+#endif
 using RyanMusicStudio.Core.Dsp;
 using RyanMusicStudio.Core.Editing;
 using RyanMusicStudio.Core.Model;
@@ -31,7 +35,12 @@ public sealed class SessionController : IDisposable
     private readonly DispatcherTimer _clock = new() { Interval = TimeSpan.FromMilliseconds(50) };
     private readonly DispatcherTimer _autosave = new() { Interval = TimeSpan.FromSeconds(30) };
     private readonly MixExporter _exporter = new();
-    private readonly Dispatcher _ui = Dispatcher.CurrentDispatcher;
+    private readonly Dispatcher _ui =
+#if PORTABLE
+        Dispatcher.UIThread;
+#else
+        Dispatcher.CurrentDispatcher;
+#endif
     private readonly DispatcherTimer _deviceRescan = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private UserSettings _settings = UserSettings.Load();
 
@@ -960,22 +969,34 @@ public sealed class SessionController : IDisposable
 
     public string? BrowseOpenProject(string title = "Open RMS project folder")
     {
+#if PORTABLE
+        // The Avalonia window owns asynchronous native file pickers.
+        return null;
+#else
         var dlg = new OpenFolderDialog { Title = title };
         return dlg.ShowDialog() == true ? dlg.FolderName : null;
+#endif
     }
 
     public string? BrowseAudio()
     {
+#if PORTABLE
+        return null;
+#else
         var dlg = new OpenFileDialog
         {
             Title = "Choose a WAV or MP3 backing track",
             Filter = "Audio|*.wav;*.mp3|WAV|*.wav|MP3|*.mp3"
         };
         return dlg.ShowDialog() == true ? dlg.FileName : null;
+#endif
     }
 
     public string? BrowseExport(ExportFormat format)
     {
+#if PORTABLE
+        return null;
+#else
         var dlg = new SaveFileDialog
         {
             Title = "Export song",
@@ -983,6 +1004,7 @@ public sealed class SessionController : IDisposable
             FileName = (Project?.Name ?? "song") + (format == ExportFormat.Mp3 ? ".mp3" : ".wav")
         };
         return dlg.ShowDialog() == true ? dlg.FileName : null;
+#endif
     }
 
     public Track? SelectedTrack() =>
@@ -1074,12 +1096,16 @@ public sealed class SessionController : IDisposable
     }
 
     private static bool ConfirmRestore() =>
+#if PORTABLE
+        true; // newer autosave wins on desktop; the previous save remains as .bak
+#else
         MessageBox.Show(
             "This song has autosaved work that is newer than its last save. RMS may not have closed cleanly.\n\n" +
             "Restore the newer work?\n\nYes: restore it.\nNo: open the last save.",
             "RMS — recover work?",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question) == MessageBoxResult.Yes;
+#endif
 
     private static bool SamePath(string a, string b) =>
         string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
