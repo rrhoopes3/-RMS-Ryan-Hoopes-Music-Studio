@@ -111,6 +111,7 @@ public partial class MainWindow : Window
         {
             SetItems(RecentList, _session.Settings.Recent.Select(r => r.Name + "  —  " + r.Path).ToList());
             RecentEmpty.Visibility = Vis(_session.Settings.Recent.Count == 0);
+            RecentList.Visibility = Vis(_session.Settings.Recent.Count > 0);
         }
 
         if (_session.Place == StudioPlace.Setup)

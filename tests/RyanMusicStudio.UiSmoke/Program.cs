@@ -1,4 +1,6 @@
 using System.IO;
+using System.Collections;
+using System.Diagnostics;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Media;
@@ -26,6 +28,10 @@ internal static class Program
         var projectRoot = Path.Combine(Path.GetTempPath(), "rms-ui-smoke-" + Guid.NewGuid().ToString("N"));
         SampleProjectBuilder.Create(projectRoot);
         if (!session.TryOpen(projectRoot)) throw new InvalidOperationException("The sample song did not open.");
+        window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+        var timeline = window.FindName("Timeline");
+        WaitUntil(() => ((IDictionary)timeline.GetType().GetField("_peaks",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(timeline)!).Count > 0);
         foreach (var place in new[] { StudioPlace.Arrange, StudioPlace.Mix, StudioPlace.Export })
         {
             session.Go(place);
@@ -55,12 +61,25 @@ internal static class Program
     {
         window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
         window.UpdateLayout();
-        var image = new RenderTargetBitmap((int)Math.Ceiling(window.ActualWidth),
-            (int)Math.Ceiling(window.ActualHeight), 96, 96, PixelFormats.Pbgra32);
-        image.Render(window);
+        var content = (FrameworkElement)window.Content;
+        var image = new RenderTargetBitmap((int)Math.Ceiling(content.ActualWidth),
+            (int)Math.Ceiling(content.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+        image.Render(content);
         var png = new PngBitmapEncoder();
         png.Frames.Add(BitmapFrame.Create(image));
         using var file = File.Create(path);
         png.Save(file);
+    }
+
+    private static void WaitUntil(Func<bool> ready)
+    {
+        var frame = new DispatcherFrame();
+        var elapsed = Stopwatch.StartNew();
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
+        timer.Tick += (_, _) => { if (ready() || elapsed.Elapsed.TotalSeconds > 15) frame.Continue = false; };
+        timer.Start();
+        Dispatcher.PushFrame(frame);
+        timer.Stop();
+        if (!ready()) throw new TimeoutException("The sample waveform did not render.");
     }
 }

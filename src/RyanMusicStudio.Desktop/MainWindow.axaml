@@ -5,4 +5,4 @@
         mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
         x:Class="RyanMusicStudio.Desktop.MainWindow"
         Title="RMS — Ryan Music Studio" Width="1100" Height="760"
-        MinWidth="850" MinHeight="600" />
+        MinWidth="980" MinHeight="640" />

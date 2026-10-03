@@ -14,14 +14,15 @@ namespace RyanMusicStudio.Desktop;
 public partial class MainWindow : Window
 {
     private readonly SessionController _session;
-    private readonly TabControl _tabs = new();
-    private readonly TextBlock _title = Text("No song open", 23, true);
+    private readonly TabControl _tabs = new() { TabStripPlacement = Dock.Left };
+    private readonly TextBlock _title = Text("No song open", 20, true);
     private readonly TextBlock _status = Text("Welcome to RMS");
     private readonly TextBlock _clock = Text("0:00 / 0:00");
     private readonly TextBlock _transport = Text("Ready");
     private readonly TextBox _name = new() { Text = "New song", PlaceholderText = "Song name" };
     private readonly TextBox _tempo = new() { Text = "90", Width = 85 };
-    private readonly ListBox _recent = new() { Height = 180 };
+    private readonly ListBox _recent = new() { Height = 160 };
+    private readonly TextBlock _recentEmpty = Text("Your songs will appear here. Create a session or open a project folder to get started.");
     private readonly ComboBox _inputs = new() { MinWidth = 320 };
     private readonly ComboBox _outputs = new() { MinWidth = 320 };
     private readonly ComboBox _channels = new() { ItemsSource = new[] { "All", "Input 1", "Input 2" } };
@@ -30,10 +31,10 @@ public partial class MainWindow : Window
     private readonly TextBlock _bufferLabel = Text("20 ms");
     private readonly ProgressBar _inputPeak = new() { Minimum = 0, Maximum = 1, Height = 12 };
     private readonly ProgressBar _outputPeak = new() { Minimum = 0, Maximum = 1, Height = 12 };
-    private readonly Slider _seek = new() { Minimum = 0, Maximum = 1, Width = 520 };
-    private readonly ListBox _tracks = new() { Height = 175 };
-    private readonly ListBox _clips = new() { Height = 120 };
-    private readonly ListBox _takes = new() { Height = 175 };
+    private readonly Slider _seek = new() { Minimum = 0, Maximum = 1, Width = 400 };
+    private readonly ListBox _tracks = new() { Height = 120 };
+    private readonly ListBox _clips = new() { Height = 100 };
+    private readonly ListBox _takes = new() { Height = 120 };
     private readonly TextBox _from = new() { Text = "0", PlaceholderText = "Start (seconds)", Width = 120 };
     private readonly TextBox _to = new() { Text = "10", PlaceholderText = "End (seconds)", Width = 120 };
     private readonly CheckBox _loop = new() { Content = "Loop" };
@@ -77,20 +78,38 @@ public partial class MainWindow : Window
         return stack;
     }
     private static StackPanel V(params Control[] children) => Stack(Orientation.Vertical, children);
-    private static StackPanel H(params Control[] children) => Stack(Orientation.Horizontal, children);
+    private static WrapPanel H(params Control[] children)
+    {
+        var row = new WrapPanel();
+        foreach (var child in children)
+        {
+            child.Margin = new Thickness(0, 0, 8, 6);
+            child.VerticalAlignment = VerticalAlignment.Center;
+            row.Children.Add(child);
+        }
+        return row;
+    }
+    private static Grid Columns(Control left, Control right)
+    {
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,18,*") };
+        Grid.SetColumn(right, 2);
+        grid.Children.Add(left); grid.Children.Add(right);
+        return grid;
+    }
     private static Border Card(Control child) => new()
     {
-        Child = child, Padding = new Thickness(18), CornerRadius = new CornerRadius(12),
-        Background = Brush("#251c18"), BorderBrush = Brush("#4c392e"), BorderThickness = new Thickness(1)
+        Child = child, Padding = new Thickness(18), CornerRadius = new CornerRadius(8),
+        Background = Brush("#231E19"), BorderBrush = Brush("#403429"), BorderThickness = new Thickness(1)
     };
     private static ScrollViewer Page(Control child) => new()
     {
         Content = child, Padding = new Thickness(24),
         HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled
     };
-    private Button Button(string label, Action action)
+    private Button Button(string label, Action action, string? style = null)
     {
-        var button = new Button { Content = label, Padding = new Thickness(14, 8) };
+        var button = new Button { Content = label, Padding = new Thickness(12, 7) };
+        if (style != null) button.Classes.Add(style);
         button.Click += (_, _) => Run(action);
         return button;
     }
@@ -103,7 +122,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        Background = Brush("#130e0d");
+        Background = Brush("#181512");
         _session = new SessionController();
         _session.Changed += () =>
         {
@@ -120,12 +139,12 @@ public partial class MainWindow : Window
 
     private Control Build()
     {
-        var header = new DockPanel { Margin = new Thickness(24, 18, 24, 12) };
-        var actions = H(Button("New", () => _ = CreateAsync()), Button("Open", () => _ = OpenAsync()),
+        var header = new DockPanel { Margin = new Thickness(24, 18, 24, 18) };
+        var actions = H(Button("New song", () => { _session.Go(StudioPlace.Home); _name.Focus(); _name.SelectAll(); }), Button("Open…", () => _ = OpenAsync()),
             Button("Save", _session.Save), Button("Save As", () => _ = SaveAsAsync()));
         DockPanel.SetDock(actions, Dock.Right);
         header.Children.Add(actions);
-        header.Children.Add(V(Text("RMS  /  RYAN MUSIC STUDIO", 12, true), _title));
+        header.Children.Add(V(Text("RMS   /   RYAN MUSIC STUDIO", 10, true), _title));
 
         _tabs.ItemsSource = new[]
         {
@@ -141,27 +160,33 @@ public partial class MainWindow : Window
         };
         _tabs.SelectedIndex = 0;
         _play = Button("Play", _session.PlayPause);
-        _record = Button("Record another take", _session.Record);
+        _record = Button("Record another take", _session.Record, "record");
         var footer = Card(V(_status, H(_play, _record, Button("Stop", _session.Stop),
             Button("Go to start", _session.GoToStart), _transport, _clock)));
-        footer.Margin = new Thickness(24, 8, 24, 20);
+        footer.Margin = new Thickness(16, 8, 16, 16);
         var grid = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
         Grid.SetRow(header, 0); Grid.SetRow(_tabs, 1); Grid.SetRow(footer, 2);
         grid.Children.Add(header); grid.Children.Add(_tabs); grid.Children.Add(footer);
         return grid;
     }
 
-    private Control Home() => Page(V(Text("Make room for a new song.", 28, true),
-        Text("Record vocals or guitar over a backing track. Your projects and every take stay on this computer."),
-        Card(V(Text("New vocal session", 18, true), Text("Name"), _name,
-            H(Text("Tempo (BPM)"), _tempo), Button("Choose folder and create", () => _ = CreateAsync()))),
-        Card(V(Text("Recent songs", 18, true), _recent,
+    private Control Home() => Page(V(Text("Your studio", 26, true),
+        Text("Record a song. Keep every take. Choose the parts you love."),
+        Columns(Card(V(Text("Start a new song", 18, true), Text("Song name", 12), _name,
+            H(Text("Tempo", 12), _tempo, Text("BPM", 12)),
+            Button("Create session…", () => _ = CreateAsync(), "primary"),
+            Text("Choose where to keep your project and recordings.", 12))),
+        Card(V(Text("Recent songs", 18, true), _recentEmpty, _recent,
             Button("Open selected song", () =>
             {
                 var i = _recent.SelectedIndex;
                 if (i >= 0 && i < _session.Settings.Recent.Count)
                     _session.TryOpen(_session.Settings.Recent[i].Path);
-            })))));
+            })))),
+        Card(V(Text("Before your first take", 16, true),
+            Text("Plug in your microphone and wear wired headphones. Audio Setup lets you check your levels and hear a short test."),
+            Button("Check audio setup", () => _session.Go(StudioPlace.Setup)))),
+        Text("LOCAL & OFFLINE   ·   No account. Your recordings stay on this computer.", 11)));
 
     private Control Setup() => Page(V(Text("Audio Setup", 28, true),
         Text("Wear wired headphones. Choose the microphone and output you want RMS to use."),
@@ -179,14 +204,15 @@ public partial class MainWindow : Window
 
     private Control Record()
     {
-        return Page(V(Text("Record and arrange", 28, true),
+        return Page(V(Text("Record and arrange", 26, true),
+            Text("Arm a track, record a few passes, then choose your best parts."),
             Card(H(Text("Song position"), _seek)),
-            Card(V(Text("Tracks", 17, true), _tracks,
+            Columns(V(Card(V(Text("Tracks", 16, true), _tracks,
                 H(Button("Import WAV / MP3", () => _ = ImportAsync()),
                     Button("Add vocal", () => _session.AddRecordingTrack("Vocal", TrackRole.Vocal)),
                     Button("Add guitar", () => _session.AddRecordingTrack("Guitar", TrackRole.Audio)),
                     Button("Arm selected", _session.ArmSelectedTrack)))),
-            Card(V(Text("Clips on selected track", 17, true), _clips,
+            Card(V(Text("Clips", 16, true), _clips,
                 H(Button("Split at playhead", _session.SplitSelected),
                     Button("Fade 50 ms", () =>
                     {
@@ -194,17 +220,17 @@ public partial class MainWindow : Window
                             _session.FadeSelected(_session.Project.SampleRate / 20, _session.Project.SampleRate / 20);
                     }),
                     Button("20 ms earlier", () => _session.NudgeSelected(-1)),
-                    Button("20 ms later", () => _session.NudgeSelected(1))))),
-            Card(V(Text("Takes on selected track", 17, true), _takes,
+                    Button("20 ms later", () => _session.NudgeSelected(1)))))),
+            V(Card(V(Text("Takes", 16, true), _takes,
                 H(Button("Hear take", Audition), Button("Choose marked part", ChoosePart),
                     Button("Clear chosen parts", _session.ClearChosenParts)))),
-            Card(V(Text("Mark a range", 17, true),
+            Card(V(Text("Choose a section", 16, true),
                 Text("Enter start and end in seconds. Use the range for comping, looping, punch-in or export."),
                 H(_from, _to, Button("Mark range", MarkRange)),
                 H(_loop, _punch, _loopRecord, _click),
                 H(Button("Undo", _session.Undo), Button("Redo", _session.Redo),
                     Button("Split selected", _session.SplitSelected),
-                    Button("Delete selected", _session.DeleteSelected))))));
+                    Button("Delete selected", _session.DeleteSelected))))))));
     }
 
     private Control Mix() => Page(V(Text("Mix", 28, true),
@@ -216,7 +242,7 @@ public partial class MainWindow : Window
 
     private Control Export()
     {
-        _export = Button("Choose destination and export", () => _ = ExportAsync());
+        _export = Button("Export song…", () => _ = ExportAsync(), "primary");
         _cancelExport = Button("Cancel export", _session.CancelExport);
         return Page(V(Text("Export your song", 28, true),
             Text("Export the same takes, chosen parts and effects you hear in RMS."),
@@ -340,6 +366,8 @@ public partial class MainWindow : Window
             _inputs.SelectedIndex = _session.SelectedInput == null ? -1 : _session.Inputs.ToList().FindIndex(d => d.Id == _session.SelectedInput.Id);
             _outputs.SelectedIndex = _session.SelectedOutput == null ? -1 : _session.Outputs.ToList().FindIndex(d => d.Id == _session.SelectedOutput.Id);
             var recentSignature = string.Join('|', _session.Settings.Recent.Select(r => r.Path));
+            _recentEmpty.IsVisible = _session.Settings.Recent.Count == 0;
+            _recent.IsVisible = _session.Settings.Recent.Count > 0;
             if (recentSignature != _recentSignature)
             {
                 _recentSignature = recentSignature;
