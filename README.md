@@ -77,6 +77,10 @@ scripts/build-desktop.sh
 
 Shortcuts also appear in the menus.
 
+Export shows progress and supports cancellation. RMS keeps any previous export until the new file is complete. Windows MP3 cancellation waits for the current Media Foundation encoding call to finish. Save As requires an empty destination folder and keeps the original song open if the copy fails.
+
+The desktop CI builds downloadable packages for Windows, macOS, and Linux. The Windows job also captures the actual WPF Home, Record, Mix, Export, and New Session screens, including the minimum window size, in the `RMS-Windows-screens` artifact.
+
 ## What release 1 does
 
 - Microphone and headphone setup, live meters, software monitoring, test take

@@ -19,8 +19,10 @@ public static class ProjectFactory
             throw new ArgumentException("Project name is required.", nameof(name));
         if (!ProjectDocument.IsSupportedSampleRate(sampleRate))
             throw new ArgumentOutOfRangeException(nameof(sampleRate), "Choose 44.1 kHz or 48 kHz.");
-        if (tempoBpm is < 20 or > 300)
+        if (!double.IsFinite(tempoBpm) || tempoBpm is < 20 or > 300)
             throw new ArgumentOutOfRangeException(nameof(tempoBpm));
+        if (numerator is < 1 or > 32 || denominator is not (1 or 2 or 4 or 8 or 16 or 32))
+            throw new ArgumentException("Choose 1–32 beats per bar and a beat unit of 1, 2, 4, 8, 16 or 32.");
 
         var root = Path.GetFullPath(folder);
         var project = new ProjectDocument

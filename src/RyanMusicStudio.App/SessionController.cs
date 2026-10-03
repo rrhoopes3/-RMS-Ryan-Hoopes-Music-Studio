@@ -48,6 +48,8 @@ public sealed class SessionController : IDisposable
     private string? _heardBeforeTake; // the take the armed track played when R was pressed
     private bool _shuttingDown;
     private Task? _testTakeTask;
+    private Task? _exportTask;
+    private CancellationTokenSource? _exportCancellation;
 
     public event Action? Changed;
     public event Action<string>? Banner;
@@ -74,6 +76,8 @@ public sealed class SessionController : IDisposable
     public bool Clipping { get; private set; }
     public bool CanUndo => _undo.CanUndo;
     public bool CanRedo => _undo.CanRedo;
+    public bool IsExporting => _exportCancellation != null;
+    public double ExportProgress { get; private set; }
 
     public SessionController()
     {
@@ -107,8 +111,12 @@ public sealed class SessionController : IDisposable
         };
         _autosave.Tick += (_, _) =>
         {
-            if (Project is { Dirty: true })
-                _store.Autosave(Project);
+            if (Project is not { Dirty: true } || _engine.IsTakeActive) return;
+            try { _store.Autosave(Project); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                SetStatus("Autosave could not write the song: " + ex.Message + " Reconnect its drive or free some space, then save again.");
+            }
         };
         // Plugging a USB mic in after launch should just work. Windows sends several
         // notifications per plug, so wait for them to settle before rescanning.
@@ -302,6 +310,7 @@ public sealed class SessionController : IDisposable
 
     /// <summary>False (and says why) while a take or count-in is running.</summary>
     public bool CanSwitchSong() =>
+        !BusyExporting() &&
         !BusyRecording("Stop recording first (press R or Space), then switch songs.") &&
         !TakeSaveFailed();
 
@@ -310,11 +319,11 @@ public sealed class SessionController : IDisposable
         if (!CanSwitchSong() || !LeaveProject()) return;
         // Never write over an existing song; the dialog suggests the same name every time.
         var requestedName = name;
-        var root = Path.Combine(parentFolder, Sanitize(name));
-        for (var n = 2; ProjectPaths.LooksLikeProject(root); n++)
+        var root = Path.Combine(parentFolder, ProjectPaths.SafeFolderName(name));
+        for (var n = 2; Directory.Exists(root) || File.Exists(root); n++)
         {
             name = $"{requestedName} ({n})";
-            root = Path.Combine(parentFolder, Sanitize(name));
+            root = Path.Combine(parentFolder, ProjectPaths.SafeFolderName(name));
         }
         var project = ProjectFactory.CreateVocalOverBeat(name, root, tempo, num, den, sampleRate);
         VocalPresets.Apply(project.Tracks.First(t => t.Role == TrackRole.Vocal), VocalPresets.Clean);
@@ -362,6 +371,15 @@ public sealed class SessionController : IDisposable
 
     public void Save()
     {
+        try { SaveProject(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SetStatus("RMS could not save the song: " + ex.Message + " Your song is still open. Reconnect its drive or use Save As to choose another folder.");
+        }
+    }
+
+    private void SaveProject()
+    {
         if (Project == null) return;
         if (BusyRecording("Stop recording first, then save.") || TakeSaveFailed()) return;
         _store.Save(Project);
@@ -372,7 +390,7 @@ public sealed class SessionController : IDisposable
     public void SaveAs(string newRoot)
     {
         if (Project == null) return;
-        if (BusyRecording("Stop recording first, then save a copy.") || TakeSaveFailed()) return;
+        if (BusyExporting() || BusyRecording("Stop recording first, then save a copy.") || TakeSaveFailed()) return;
         if (ProjectPaths.LooksLikeProject(newRoot) && !SamePath(newRoot, Project.RootPath))
         {
             SetStatus("That folder already holds an RMS song. Choose an empty folder for the copy.");
@@ -429,6 +447,7 @@ public sealed class SessionController : IDisposable
 
     public void PlayPause()
     {
+        if (_engine.IsTestTaking) { SetStatus("Wait for the short microphone test to finish."); return; }
         if (Project == null)
         {
             SetStatus(NoSongMessage);
@@ -957,14 +976,66 @@ public sealed class SessionController : IDisposable
         Raise();
     }
 
-    public async Task ExportAsync(string dest, ExportFormat format, ExportScope scope)
+    public async Task<bool> ExportAsync(string dest, ExportFormat format, ExportScope scope)
     {
-        if (Project == null) return;
+        if (Project == null) { SetStatus(NoSongMessage); return false; }
+        if (_shuttingDown || BusyExporting() || BusyRecording("Finish the take before exporting the song.") || TakeSaveFailed())
+            return false;
+        if (scope == ExportScope.SelectedRange && !HasSelection)
+        { SetStatus("Mark a range on Record before exporting it."); return false; }
         var start = scope == ExportScope.SelectedRange ? Project.SelectionStartFrame : 0;
         var end = scope == ExportScope.SelectedRange ? Project.SelectionEndFrame : Project.LengthFrames();
+        if (end <= start)
+        { SetStatus("There is no audio to export yet. Record a take or import a backing track first."); return false; }
+        // Snapshot on the UI thread, before the worker starts. Edits and undo cannot change this export.
+        var snapshot = ProjectSerializer.FromJson(ProjectSerializer.ToJson(Project), Project.RootPath);
+        using var cancellation = new CancellationTokenSource();
+        _exportCancellation = cancellation;
+        ExportProgress = 0;
         SetStatus("Exporting " + Path.GetFileName(dest) + "…");
-        await Task.Run(() => _exporter.Export(Project, _engine.Cache, dest, format, scope, start, end));
-        SetStatus($"Exported {Path.GetFileName(dest)}. The click track and any reference track were left out.");
+        var progress = new Progress<double>(value =>
+        {
+            if (_exportCancellation != cancellation) return;
+            ExportProgress = value;
+            Raise();
+        });
+        try
+        {
+            _exportTask = Task.Run(() => _exporter.Export(snapshot, _engine.Cache, dest, format, scope,
+                start, end, cancellation.Token, progress));
+            await _exportTask;
+            SetStatus($"Exported {Path.GetFileName(dest)}. The click track and any reference track were left out.");
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            SetStatus("Export cancelled. Any previous export was left untouched.");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Export failed: " + ex.Message);
+            throw;
+        }
+        finally
+        {
+            _exportTask = null;
+            _exportCancellation = null;
+            Raise();
+        }
+    }
+
+    public void CancelExport()
+    {
+        _exportCancellation?.Cancel();
+        if (IsExporting) SetStatus("Cancelling export… Waiting for the current audio conversion to finish.");
+    }
+
+    private bool BusyExporting()
+    {
+        if (!IsExporting) return false;
+        SetStatus("Wait for the export to finish, or cancel it on Export first.");
+        return true;
     }
 
     public string? BrowseOpenProject(string title = "Open RMS project folder")
@@ -1016,6 +1087,12 @@ public sealed class SessionController : IDisposable
         _shuttingDown = true;
         try
         {
+            CancelExport();
+            if (_exportTask is { } export)
+            {
+                try { await export; }
+                catch (Exception) { /* the export reports its error and preserves the old destination */ }
+            }
             var testTake = _testTakeTask;
             if (testTake != null)
                 await testTake;
@@ -1025,7 +1102,7 @@ public sealed class SessionController : IDisposable
             await _ui.InvokeAsync(() => { });
             if (_engine.HasTakeFinalizationError)
                 throw new InvalidOperationException("A take could not be finalized. RMS kept its recovery marker; the project was not saved over it.");
-            Save();
+            SaveProject();
             Dispose();
         }
         catch
@@ -1039,6 +1116,7 @@ public sealed class SessionController : IDisposable
     {
         _clock.Stop();
         _autosave.Stop();
+        _deviceRescan.Stop();
         if (Project is { Dirty: true })
         {
             try { _store.Autosave(Project); } catch { /* shutting down */ }
@@ -1107,9 +1185,7 @@ public sealed class SessionController : IDisposable
             MessageBoxImage.Question) == MessageBoxResult.Yes;
 #endif
 
-    private static bool SamePath(string a, string b) =>
-        string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)), StringComparison.OrdinalIgnoreCase);
+    private static bool SamePath(string a, string b) => ProjectPaths.SameDirectory(a, b);
 
     private void ApplySavedDevices()
     {
@@ -1157,7 +1233,7 @@ public sealed class SessionController : IDisposable
 
     private bool BusyRecording(string message)
     {
-        if (!_engine.IsTakeActive) return false;
+        if (!_engine.IsTakeActive && !_engine.IsTestTaking) return false;
         SetStatus(message);
         return true;
     }
@@ -1203,12 +1279,6 @@ public sealed class SessionController : IDisposable
             if (clip != null) return (track, clip);
         }
         return (null, null);
-    }
-
-    private static string Sanitize(string name)
-    {
-        var invalid = Path.GetInvalidFileNameChars();
-        return new string(name.Select(c => invalid.Contains(c) ? '-' : c).ToArray());
     }
 
     private void SetStatus(string text)

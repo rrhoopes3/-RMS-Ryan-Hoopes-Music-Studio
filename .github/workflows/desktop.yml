@@ -22,6 +22,11 @@ jobs:
           dotnet-version: |
             8.0.x
             10.0.x
+      - name: Install Linux audio dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2t64 libjack-jackd2-0
       - name: Test shared model and portable audio engine
         run: dotnet test tests/RyanMusicStudio.Tests/RyanMusicStudio.Tests.csproj -f net8.0 -c Release
       - name: Build macOS packages
@@ -51,5 +56,22 @@ jobs:
           dotnet-version: 8.0.x
       - name: Test original Windows app
         run: dotnet test tests/RyanMusicStudio.Tests/RyanMusicStudio.Tests.csproj -f net8.0-windows -c Release
-      - name: Build WPF app
-        run: dotnet build src/RyanMusicStudio.App/RyanMusicStudio.App.csproj -c Release
+      - name: Check Windows layouts and capture screens
+        run: dotnet run --project tests/RyanMusicStudio.UiSmoke/RyanMusicStudio.UiSmoke.csproj -c Release -- dist/windows-ui
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: RMS-Windows-screens
+          path: dist/windows-ui/*.png
+          if-no-files-found: warn
+      - name: Publish Windows portable app
+        run: >-
+          dotnet publish src/RyanMusicStudio.App/RyanMusicStudio.App.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -o dist/RMS-portable
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RMS-Windows
+          path: dist/RMS-portable/RMS.exe
+          if-no-files-found: error

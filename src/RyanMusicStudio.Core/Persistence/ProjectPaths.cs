@@ -17,6 +17,26 @@ public sealed class ProjectPaths
 
     public ProjectPaths(string root) => Root = Path.GetFullPath(root);
 
+    public static bool SameDirectory(string a, string b) =>
+        string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    // Use Windows-compatible folder names on every platform so songs can be moved between them.
+    public static string SafeFolderName(string name)
+    {
+        var safe = new string(name.Trim().Select(c => c < ' ' || "<>:\"/\\|?*".Contains(c) ? '-' : c).ToArray())
+            .TrimEnd(' ', '.');
+        if (string.IsNullOrWhiteSpace(safe)) safe = "New song";
+        var stem = safe.Split('.')[0].TrimEnd(' ');
+        if (new[] { "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$" }.Contains(stem, StringComparer.OrdinalIgnoreCase) ||
+            (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) ||
+                                  stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) &&
+             "123456789¹²³".Contains(stem[3])))
+            safe = "_" + safe;
+        return safe;
+    }
+
     public void EnsureLayout()
     {
         Directory.CreateDirectory(Root);

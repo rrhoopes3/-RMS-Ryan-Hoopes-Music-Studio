@@ -1,4 +1,4 @@
-﻿<Window x:Class="RyanMusicStudio.App.MainWindow"
+<Window x:Class="RyanMusicStudio.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ctrl="clr-namespace:RyanMusicStudio.App.Controls"
@@ -81,25 +81,29 @@
         </Border>
 
         <Border DockPanel.Dock="Bottom" Background="#221A15" Padding="16,10">
-            <DockPanel>
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button Style="{StaticResource PlainButton}" Content="Go to start  (Home)" Click="Home_Click" Margin="0,0,8,0" ToolTip="Home — jump to the beginning"/>
-                    <Button Style="{StaticResource PlainButton}" Content="Play  (Space)" Click="Play_Click" Margin="0,0,8,0" ToolTip="Space — play or stop"/>
-                    <Button x:Name="RecordBtn" Style="{StaticResource RecordButton}" Content="Record another take  (R)" Click="Record_Click" ToolTip="R — record a new vocal take"/>
-                    <Button Style="{StaticResource PlainButton}" Content="Stop" Click="Stop_Click" Margin="8,0,0,0"/>
-                </StackPanel>
-                <StackPanel>
-                    <TextBlock x:Name="StatusText" FontSize="15"/>
-                    <TextBlock x:Name="LyricsText" Foreground="{StaticResource CopperBrush}" Margin="0,4,0,0"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                        <TextBlock Text="Mic  " VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
-                        <ctrl:MeterBar x:Name="InMeter" Width="180" Height="12" Margin="0,0,16,0"/>
-                        <TextBlock Text="Song  " VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
-                        <ctrl:MeterBar x:Name="OutMeter" Width="180" Height="12"/>
-                        <TextBlock x:Name="ClipLabel" Text="  CLIP" Foreground="{StaticResource RecordBrush}" FontWeight="Bold" Visibility="Collapsed"/>
+            <StackPanel>
+                <TextBlock x:Name="StatusText" FontSize="14" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                <TextBlock x:Name="LyricsText" Foreground="{StaticResource CopperBrush}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="16,0,0,0">
+                        <Button x:Name="StartBtn" Style="{StaticResource PlainButton}" Content="Go to start" Click="Home_Click" Margin="0,0,8,0" ToolTip="Home — jump to the beginning" FontSize="14" Padding="12,8"/>
+                        <Button x:Name="PlayBtn" Style="{StaticResource PlainButton}" Content="Play  (Space)" Click="Play_Click" Margin="0,0,8,0" ToolTip="Space — play or stop" FontSize="14" Padding="12,8" MinWidth="125"/>
+                        <Button x:Name="RecordBtn" Style="{StaticResource RecordButton}" Content="Record another take  (R)" Click="Record_Click" ToolTip="R — record into the armed track" FontSize="15" MinWidth="220" Height="46"/>
+                        <Button x:Name="StopBtn" Style="{StaticResource PlainButton}" Content="Stop" Click="Stop_Click" Margin="8,0,0,0" FontSize="14" Padding="12,8"/>
                     </StackPanel>
-                </StackPanel>
-            </DockPanel>
+                    <Grid VerticalAlignment="Center">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                        <TextBlock Text="Mic" Foreground="{StaticResource MutedBrush}" Margin="0,0,10,6"/>
+                        <ctrl:MeterBar x:Name="InMeter" Grid.Column="1" Height="10" Margin="0,0,0,6"/>
+                        <TextBlock x:Name="ClipLabel" Grid.Column="2" Text="  CLIP" Foreground="{StaticResource RecordBrush}" FontWeight="Bold" Visibility="Collapsed"/>
+                        <TextBlock Text="Song" Grid.Row="1" Foreground="{StaticResource MutedBrush}" Margin="0,0,10,0"/>
+                        <ctrl:MeterBar x:Name="OutMeter" Grid.Row="1" Grid.Column="1" Height="10"/>
+                    </Grid>
+                </DockPanel>
+            </StackPanel>
         </Border>
 
         <Grid>
@@ -116,6 +120,7 @@
                     </StackPanel>
                     <TextBlock Text="Recent projects" FontSize="16" FontWeight="SemiBold" Margin="0,36,0,10"/>
                     <ListBox x:Name="RecentList" Height="180" MouseDoubleClick="Recent_DoubleClick"/>
+                    <TextBlock x:Name="RecentEmpty" Text="Your songs will appear here after you create or open a project." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                     <TextBlock Text="A session is just a folder on this computer. RMS never uploads your singing."
                                Foreground="{StaticResource MutedBrush}" Margin="0,16,0,0" TextWrapping="Wrap"/>
                 </StackPanel>
@@ -253,7 +258,12 @@
                     </ComboBox>
                     <StackPanel Orientation="Horizontal">
                         <Button Style="{StaticResource PlainButton}" Content="Play a final check" Click="Play_Click" Margin="0,0,8,0"/>
-                        <Button Style="{StaticResource PrimaryButton}" Content="Export song…" Click="Export_Click"/>
+                        <Button x:Name="ExportBtn" Style="{StaticResource PrimaryButton}" Content="Export song…" Click="Export_Click"/>
+                        <Button x:Name="CancelExportBtn" Style="{StaticResource PlainButton}" Content="Cancel export" Click="CancelExport_Click" Margin="8,0,0,0" Visibility="Collapsed"/>
+                    </StackPanel>
+                    <StackPanel x:Name="ExportProgressPanel" Visibility="Collapsed" Margin="0,18,0,0">
+                        <ProgressBar x:Name="ExportProgressBar" Minimum="0" Maximum="100" Height="8" Foreground="{StaticResource CopperBrush}"/>
+                        <TextBlock x:Name="ExportProgressText" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0"/>
                     </StackPanel>
                 </StackPanel>
             </ScrollViewer>

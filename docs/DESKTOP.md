@@ -15,6 +15,8 @@ On an Apple Silicon Mac, open `dist/RMS-osx-arm64.app`. The ZIP next to it prese
 
 On Linux, unpack `dist/RMS-linux-x64.tar.gz` or `dist/RMS-linux-arm64.tar.gz` and run the `RMS` binary in the extracted folder. PortAudio needs the machine's audio system and Avalonia needs a graphical desktop. The package includes .NET and the native audio/UI libraries.
 
+The bundled Linux PortAudio library also links to ALSA and JACK. On Ubuntu 24.04, install these runtime dependencies with `sudo apt-get install libasound2t64 libjack-jackd2-0` (no JACK server setup is needed). CI installs these before running the recording-recovery tests.
+
 To cross-publish another architecture, set `RID`, for example `RID=linux-arm64 scripts/build-desktop.sh`. A cross-published package still needs to be run and audio-tested on its target OS.
 
 ## First song
@@ -24,6 +26,8 @@ To cross-publish another architecture, set `RID`, for example `RID=linux-arm64 s
 3. On Record, import a WAV or MP3 backing track, arm a vocal or guitar track, and record takes. Finish a take with the same Record button or Stop.
 4. Select a take to audition it. Enter a start and end time, then choose the marked part. Additional choices replace overlapping parts while keeping the rest of the comp.
 5. On Mix, set gain, pan, mute/solo, or a vocal preset. On Export, choose WAV or MP3 and the whole mix, marked range, or stems.
+
+Transport buttons stay available on every page. Save As copies the song and its audio into an empty folder. Export shows progress and can be cancelled; existing exports are replaced only after successful completion. An export uses the mix as it was when you started it, so later edits do not change that file. On macOS, Command+S saves and Command+Shift+Z redoes an edit.
 
 The portable window uses start/end fields for range and comp selection instead of the Windows timeline's drag controls. The core comp and export behavior is shared. PortAudio does not expose RMS's Windows-only WASAPI Exclusive switch. Recording offset and buffer settings remain in the project/settings; loop and punch controls are available on Record.
 

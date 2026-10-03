@@ -32,17 +32,25 @@ public sealed class ProjectStore
     {
         var source = string.IsNullOrWhiteSpace(project.RootPath) ? null : new ProjectPaths(project.RootPath);
         var dest = new ProjectPaths(newRoot);
+        if (source != null && ProjectPaths.SameDirectory(source.Root, dest.Root))
+            return Save(project);
+        if (Directory.Exists(dest.Root) && Directory.EnumerateFileSystemEntries(dest.Root).Any())
+            throw new IOException("Choose an empty folder for the copy. Files already in this folder have been left untouched.");
         dest.EnsureLayout();
-        if (source != null && Directory.Exists(source.Root) &&
-            !string.Equals(source.Root, dest.Root, StringComparison.OrdinalIgnoreCase))
+        if (source != null && Directory.Exists(source.Root))
         {
             CopyMediaTree(source.OriginalsDir, dest.OriginalsDir);
             CopyMediaTree(source.WorkingDir, dest.WorkingDir);
             CopyMediaTree(source.TakesDir, dest.TakesDir);
         }
 
-        project.RootPath = dest.Root;
-        return Save(project);
+        // Do not move the open song to a partially written copy if saving fails.
+        var copy = ProjectSerializer.FromJson(ProjectSerializer.ToJson(project), dest.Root);
+        var saved = Save(copy);
+        project.RootPath = copy.RootPath;
+        project.ModifiedUtc = copy.ModifiedUtc;
+        project.Dirty = false;
+        return saved;
     }
 
     public void Autosave(ProjectDocument project)

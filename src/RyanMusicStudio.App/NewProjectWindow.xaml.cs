@@ -19,6 +19,7 @@ public partial class NewProjectWindow : Window
         FolderBox.Text = string.IsNullOrWhiteSpace(suggestedParent)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "RMS Projects")
             : suggestedParent;
+        Loaded += (_, _) => { NameBox.Focus(); NameBox.SelectAll(); };
     }
 
     private void Browse_Click(object sender, RoutedEventArgs e)
@@ -42,7 +43,24 @@ public partial class NewProjectWindow : Window
             MessageBox.Show("Choose a folder.", "RMS");
             return;
         }
-        Directory.CreateDirectory(Folder);
+        if (!double.TryParse(TempoBox.Text, out var tempo) || !double.IsFinite(tempo) || tempo is < 20 or > 300)
+        {
+            MessageBox.Show(this, "Choose a tempo between 20 and 300 BPM.", "RMS");
+            TempoBox.Focus(); TempoBox.SelectAll();
+            return;
+        }
+        if (!int.TryParse(NumBox.Text, out var beats) || beats is < 1 or > 32 ||
+            !int.TryParse(DenBox.Text, out var note) || note is not (1 or 2 or 4 or 8 or 16 or 32))
+        {
+            MessageBox.Show(this, "Choose 1–32 beats per bar and a note value of 1, 2, 4, 8, 16 or 32.", "RMS");
+            return;
+        }
+        try { Directory.CreateDirectory(Folder); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            MessageBox.Show(this, "RMS could not use this folder: " + ex.Message + "\n\nChoose another folder and try again.", "RMS");
+            return;
+        }
         DialogResult = true;
     }
 }

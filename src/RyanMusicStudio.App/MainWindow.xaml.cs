@@ -62,6 +62,7 @@ public partial class MainWindow : Window
         _syncing = true;
         StatusText.Text = _session.Status;
         LyricsText.Text = _session.Lyrics;
+        LyricsText.Visibility = Vis(!string.IsNullOrWhiteSpace(_session.Lyrics));
         ClockText.Text = _session.Project == null
             ? "00:00.000"
             : TimelineMath.FormatClock(_session.Engine.PlayheadFrames, _session.Project.SampleRate);
@@ -74,7 +75,22 @@ public partial class MainWindow : Window
         ClipLabel.Visibility = _session.Clipping ? Visibility.Visible : Visibility.Collapsed;
         RecordBtn.Content = _session.Engine.IsRecording ? "Stop recording  (R)"
             : _session.Engine.IsCountingIn ? "Counting in…  (R cancels)"
+            : _session.Engine.IsTakeActive ? "Saving take…"
             : "Record another take  (R)";
+        var hasSong = _session.Project != null;
+        var savingTake = _session.Engine.IsTakeActive && !_session.Engine.IsRecording && !_session.Engine.IsCountingIn;
+        RecordBtn.IsEnabled = hasSong && !savingTake && !_session.Engine.IsTestTaking;
+        PlayBtn.Content = _session.Engine.IsTakeActive ? "Finish take" : _session.Engine.IsPlaying ? "Stop  (Space)" : "Play  (Space)";
+        PlayBtn.IsEnabled = hasSong && !savingTake && !_session.Engine.IsTestTaking;
+        StartBtn.IsEnabled = hasSong && !_session.Engine.IsTakeActive && !_session.Engine.IsTestTaking;
+        StopBtn.IsEnabled = _session.Engine.IsPlaying || _session.Engine.IsTakeActive;
+        ExportBtn.IsEnabled = hasSong && !_session.IsExporting && !_session.Engine.IsTakeActive && !_session.Engine.IsTestTaking;
+        ExportBtn.Content = _session.IsExporting ? "Exporting…" : "Export song…";
+        CancelExportBtn.Visibility = Vis(_session.IsExporting);
+        ExportProgressPanel.Visibility = Vis(_session.IsExporting);
+        ExportProgressBar.Value = _session.ExportProgress * 100;
+        ExportProgressText.Text = $"Exporting · {_session.ExportProgress:P0}";
+        FormatBox.IsEnabled = ScopeBox.IsEnabled = !_session.IsExporting;
         Title = _session.Project == null
             ? "RMS — Ryan Music Studio"
             : $"{_session.Project.Name}{(_session.Project.Dirty ? " •" : "")} — RMS";
@@ -94,6 +110,7 @@ public partial class MainWindow : Window
         if (_session.Place == StudioPlace.Home)
         {
             SetItems(RecentList, _session.Settings.Recent.Select(r => r.Name + "  —  " + r.Path).ToList());
+            RecentEmpty.Visibility = Vis(_session.Settings.Recent.Count == 0);
         }
 
         if (_session.Place == StudioPlace.Setup)
@@ -266,16 +283,16 @@ public partial class MainWindow : Window
     private void NewSession_Click(object sender, RoutedEventArgs e)
     {
         if (!_session.CanSwitchSong()) return;
-        var dlg = new NewProjectWindow(_session.Settings.LastProjectParent);
+        var dlg = new NewProjectWindow(_session.Settings.LastProjectParent) { Owner = this };
         if (dlg.ShowDialog() == true)
-            _session.NewVocalSession(dlg.ProjectName, dlg.Folder, dlg.Tempo, dlg.Numerator, dlg.Denominator, dlg.SampleRate);
+            Run(() => _session.NewVocalSession(dlg.ProjectName, dlg.Folder, dlg.Tempo, dlg.Numerator, dlg.Denominator, dlg.SampleRate));
     }
 
     private void Open_Click(object sender, RoutedEventArgs e)
     {
         if (!_session.CanSwitchSong()) return;
         var path = _session.BrowseOpenProject();
-        if (path != null) _session.TryOpen(path);
+        if (path != null) Run(() => _session.TryOpen(path));
     }
 
     private void Save_Click(object sender, RoutedEventArgs e) => _session.Save();
@@ -283,7 +300,7 @@ public partial class MainWindow : Window
     private void SaveAs_Click(object sender, RoutedEventArgs e)
     {
         var path = _session.BrowseOpenProject("Choose an empty folder for the copy");
-        if (path != null) _session.SaveAs(path);
+        if (path != null) Run(() => _session.SaveAs(path));
     }
 
     private void Play_Click(object sender, RoutedEventArgs e) => _session.PlayPause();
@@ -307,8 +324,9 @@ public partial class MainWindow : Window
 
     private void About_Click(object sender, RoutedEventArgs e)
     {
+        var version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "1.1.0";
         MessageBox.Show(
-            "RMS — Ryan Music Studio\nVersion 1.0\n\nA local, offline vocal recorder for Windows. No account. Not affiliated with any other DAW, guitar, or audio brand.\n\nKeyboard: Space play/stop · R record · Ctrl+S save · Ctrl+Z undo · Ctrl+Y redo · S split · Delete · Home · L loop · Ctrl++ / Ctrl+- zoom",
+            $"RMS — Ryan Music Studio\nVersion {version}\n\nA local, offline vocal recorder for Windows. No account. Not affiliated with any other DAW, guitar, or audio brand.\n\nKeyboard: Space play/stop · R record · Ctrl+S save · Ctrl+Z undo · Ctrl+Y redo · S split · Delete · Home · L loop · Ctrl++ / Ctrl+- zoom",
             "About RMS",
             MessageBoxButton.OK);
     }
@@ -317,19 +335,19 @@ public partial class MainWindow : Window
     {
         if (RecentList.SelectedIndex < 0) return;
         var item = _session.Settings.Recent[RecentList.SelectedIndex];
-        _session.TryOpen(item.Path);
+        Run(() => _session.TryOpen(item.Path));
     }
 
     private void Input_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_syncing || InputBox.SelectedItem is not AudioDeviceInfo d) return;
-        _session.ChooseInput(d);
+        Run(() => _session.ChooseInput(d));
     }
 
     private void Output_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_syncing || OutputBox.SelectedItem is not AudioDeviceInfo d) return;
-        _session.ChooseOutput(d);
+        Run(() => _session.ChooseOutput(d));
     }
 
     private void Exclusive_Click(object sender, RoutedEventArgs e)
@@ -454,7 +472,7 @@ public partial class MainWindow : Window
         }
         var dest = _session.BrowseExport(format);
         if (dest == null) return;
-        try { await _session.ExportAsync(dest, format, scope); }
+        try { if (!await _session.ExportAsync(dest, format, scope)) return; }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "RMS could not export", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -465,9 +483,23 @@ public partial class MainWindow : Window
             Process.Start("explorer.exe", $"/select,\"{dest}\"");
     }
 
+    private void CancelExport_Click(object sender, RoutedEventArgs e) => _session.CancelExport();
+
+    private void Run(Action action)
+    {
+        try { action(); }
+        catch (Exception ex)
+        {
+            _session.Tell("RMS could not complete that action: " + ex.Message);
+            MessageBox.Show(this, ex.Message, "RMS", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     // Handled on PreviewKeyDown so a control that was just clicked can't swallow Space/Home.
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
+        if (Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase or ComboBox) return;
+        if (e.IsRepeat || Keyboard.Modifiers.HasFlag(ModifierKeys.Alt)) return;
         // A control reached with Tab keeps its own Space/Home (toggle a checkbox, press a button, first row).
         if (_focusFromKeyboard && (e.Key is Key.Space or Key.Home) && Keyboard.FocusedElement is Control c && c != this)
             return;

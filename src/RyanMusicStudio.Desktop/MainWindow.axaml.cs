@@ -5,6 +5,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using RyanMusicStudio.App;
 using RyanMusicStudio.Core.Model;
 
@@ -26,6 +27,7 @@ public partial class MainWindow : Window
     private readonly ComboBox _channels = new() { ItemsSource = new[] { "All", "Input 1", "Input 2" } };
     private readonly CheckBox _monitor = new() { Content = "Hear microphone in headphones" };
     private readonly Slider _buffer = new() { Minimum = 8, Maximum = 80, Width = 200 };
+    private readonly TextBlock _bufferLabel = Text("20 ms");
     private readonly ProgressBar _inputPeak = new() { Minimum = 0, Maximum = 1, Height = 12 };
     private readonly ProgressBar _outputPeak = new() { Minimum = 0, Maximum = 1, Height = 12 };
     private readonly Slider _seek = new() { Minimum = 0, Maximum = 1, Width = 520 };
@@ -47,6 +49,11 @@ public partial class MainWindow : Window
     private readonly ComboBox _scope = new() { ItemsSource = new[] { "Whole song", "Marked range", "Vocals only", "Backing only" }, SelectedIndex = 0 };
     private Button _play = null!;
     private Button _record = null!;
+    private Button _export = null!;
+    private Button _cancelExport = null!;
+    private readonly ProgressBar _exportProgress = new() { Minimum = 0, Maximum = 100, Height = 8 };
+    private readonly TextBlock _exportLabel = Text("");
+    private int _refreshQueued;
     private bool _sync;
     private bool _closeReady;
     private bool _closePending;
@@ -98,7 +105,11 @@ public partial class MainWindow : Window
         InitializeComponent();
         Background = Brush("#130e0d");
         _session = new SessionController();
-        _session.Changed += () => Dispatcher.UIThread.Post(Refresh);
+        _session.Changed += () =>
+        {
+            if (Interlocked.Exchange(ref _refreshQueued, 1) == 1) return;
+            Dispatcher.UIThread.Post(() => { Volatile.Write(ref _refreshQueued, 0); Refresh(); });
+        };
         _session.Banner += message => Dispatcher.UIThread.Post(() => _status.Text = message);
         Content = Build();
         Wire();
@@ -111,7 +122,7 @@ public partial class MainWindow : Window
     {
         var header = new DockPanel { Margin = new Thickness(24, 18, 24, 12) };
         var actions = H(Button("New", () => _ = CreateAsync()), Button("Open", () => _ = OpenAsync()),
-            Button("Save", _session.Save));
+            Button("Save", _session.Save), Button("Save As", () => _ = SaveAsAsync()));
         DockPanel.SetDock(actions, Dock.Right);
         header.Children.Add(actions);
         header.Children.Add(V(Text("RMS  /  RYAN MUSIC STUDIO", 12, true), _title));
@@ -129,7 +140,10 @@ public partial class MainWindow : Window
             if (!_sync && _tabs.SelectedIndex >= 0) _session.Go((StudioPlace)_tabs.SelectedIndex);
         };
         _tabs.SelectedIndex = 0;
-        var footer = Card(H(Text("STATUS", 11, true), _status));
+        _play = Button("Play", _session.PlayPause);
+        _record = Button("Record another take", _session.Record);
+        var footer = Card(V(_status, H(_play, _record, Button("Stop", _session.Stop),
+            Button("Go to start", _session.GoToStart), _transport, _clock)));
         footer.Margin = new Thickness(24, 8, 24, 20);
         var grid = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
         Grid.SetRow(header, 0); Grid.SetRow(_tabs, 1); Grid.SetRow(footer, 2);
@@ -153,7 +167,7 @@ public partial class MainWindow : Window
         Text("Wear wired headphones. Choose the microphone and output you want RMS to use."),
         Card(V(Text("Microphone", 17, true), _inputs, H(Text("Channel"), _channels), _inputPeak)),
         Card(V(Text("Headphones / speakers", 17, true), _outputs, _outputPeak)),
-        Card(V(_monitor, H(Text("Buffer"), _buffer),
+        Card(V(_monitor, H(Text("Buffer"), _buffer, _bufferLabel),
             H(Button("Refresh devices", () => _session.RescanDevices(true)),
                 Button("Test tone", _session.PlayTestTone),
                 Button("Test recording", () => _ = _session.RecordTestTakeAsync()),
@@ -165,11 +179,8 @@ public partial class MainWindow : Window
 
     private Control Record()
     {
-        _play = Button("Play", _session.PlayPause);
-        _record = Button("Record another take", _session.Record);
         return Page(V(Text("Record and arrange", 28, true),
-            Card(V(H(_play, _record, Button("Stop", _session.Stop), _transport),
-                H(_clock, _seek))),
+            Card(H(Text("Song position"), _seek)),
             Card(V(Text("Tracks", 17, true), _tracks,
                 H(Button("Import WAV / MP3", () => _ = ImportAsync()),
                     Button("Add vocal", () => _session.AddRecordingTrack("Vocal", TrackRole.Vocal)),
@@ -203,11 +214,16 @@ public partial class MainWindow : Window
             H(Button("Clean", () => Preset("Clean")), Button("Warm", () => Preset("Warm")),
                 Button("Spacious", () => Preset("Spacious")))))));
 
-    private Control Export() => Page(V(Text("Export your song", 28, true),
-        Text("Export the same takes, chosen parts and effects you hear in RMS."),
-        Card(V(Text("Format", 17, true), _format, Text("What to export", 17, true), _scope,
-            Button("Choose destination and export", () => _ = ExportAsync()),
-            Text("WAV and MP3 import, and MP3 export, require ffmpeg. WAV export works without it.")))));
+    private Control Export()
+    {
+        _export = Button("Choose destination and export", () => _ = ExportAsync());
+        _cancelExport = Button("Cancel export", _session.CancelExport);
+        return Page(V(Text("Export your song", 28, true),
+            Text("Export the same takes, chosen parts and effects you hear in RMS."),
+            Card(V(Text("Format", 17, true), _format, Text("What to export", 17, true), _scope,
+                H(_export, _cancelExport), _exportProgress, _exportLabel,
+                Text("WAV and MP3 import, and MP3 export, require ffmpeg. WAV export works without it.")))));
+    }
 
     private void Wire()
     {
@@ -292,14 +308,25 @@ public partial class MainWindow : Window
         {
             var p = _session.Project;
             _title.Text = p?.Name ?? "No song open";
+            Title = p == null ? "RMS — Ryan Music Studio" : $"{p.Name}{(p.Dirty ? " •" : "")} — RMS";
             _status.Text = _session.Status;
             _transport.Text = _session.Engine.IsRecording ? "● Recording" :
-                _session.Engine.IsCountingIn ? "Count-in" : _session.Engine.IsPlaying ? "Playing" : "Ready";
-            _play.Content = _session.Engine.IsPlaying ? "Stop playback" : "Play";
-            _record.Content = _session.Engine.IsTakeActive ? "Finish take" : "Record another take";
+                _session.Engine.IsCountingIn ? "Count-in" : _session.Engine.IsTakeActive ? "Saving take…" :
+                _session.Engine.IsPlaying ? "Playing" : "Ready";
+            var savingTake = _session.Engine.IsTakeActive && !_session.Engine.IsRecording && !_session.Engine.IsCountingIn;
+            _play.Content = _session.Engine.IsTakeActive ? "Finish take" : _session.Engine.IsPlaying ? "Stop playback" : "Play";
+            _record.Content = _session.Engine.IsCountingIn ? "Cancel count-in" : savingTake ? "Saving take…" :
+                _session.Engine.IsRecording ? "Finish take" : "Record another take";
+            _play.IsEnabled = _record.IsEnabled = p != null && !savingTake && !_session.Engine.IsTestTaking;
+            _export.IsEnabled = p != null && !_session.IsExporting && !_session.Engine.IsTakeActive && !_session.Engine.IsTestTaking;
+            _format.IsEnabled = _scope.IsEnabled = !_session.IsExporting;
+            _cancelExport.IsVisible = _exportProgress.IsVisible = _exportLabel.IsVisible = _session.IsExporting;
+            _exportProgress.Value = _session.ExportProgress * 100;
+            _exportLabel.Text = $"Exporting · {_session.ExportProgress:P0}";
             _inputPeak.Value = Math.Clamp(_session.InputPeak, 0, 1);
             _outputPeak.Value = Math.Clamp(_session.OutputPeak, 0, 1);
             _buffer.Value = _session.Settings.BufferMilliseconds;
+            _bufferLabel.Text = $"{_session.Settings.BufferMilliseconds} ms";
             _monitor.IsChecked = _session.Settings.SoftwareMonitor;
             _channels.SelectedIndex = _session.Settings.InputChannel;
             var deviceSignature = string.Join('|', _session.Inputs.Select(d => d.Id)) + " / " +
@@ -351,7 +378,7 @@ public partial class MainWindow : Window
                 _clips.SelectedIndex = selected?.Clips.FindIndex(c => c.Id == _session.SelectedClipId) ?? -1;
             }
             var takeSignature = selected == null ? "" : selected.Id + ":" +
-                string.Join('|', selected.Takes.Select(t => t.Id + t.LengthFrames));
+                string.Join('|', selected.Takes.Select(t => $"{t.Id}:{t.StartFrame}:{t.LengthFrames}"));
             if (takeSignature != _takeSignature)
             {
                 _takeSignature = takeSignature;
@@ -384,7 +411,8 @@ public partial class MainWindow : Window
         start = end = 0;
         var p = _session.Project;
         if (p == null || !double.TryParse(_from.Text, out var a) ||
-            !double.TryParse(_to.Text, out var b) || a < 0 || b <= a)
+            !double.TryParse(_to.Text, out var b) || !double.IsFinite(a) || !double.IsFinite(b) ||
+            a < 0 || b <= a || b * p.SampleRate >= long.MaxValue)
         { _session.Tell("Enter valid start and end seconds."); return false; }
         start = (long)(a * p.SampleRate); end = (long)(b * p.SampleRate);
         return true;
@@ -407,7 +435,9 @@ public partial class MainWindow : Window
 
     private async Task CreateAsync()
     {
-        if (!double.TryParse(_tempo.Text, out var bpm) || bpm is < 20 or > 300)
+        if (!_session.CanSwitchSong()) return;
+        if (string.IsNullOrWhiteSpace(_name.Text)) { _session.Tell("Give the song a name first."); return; }
+        if (!double.TryParse(_tempo.Text, out var bpm) || !double.IsFinite(bpm) || bpm is < 20 or > 300)
         { _session.Tell("Tempo must be between 20 and 300 BPM."); return; }
         var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
         { Title = "Choose the parent folder for this song", AllowMultiple = false });
@@ -416,10 +446,20 @@ public partial class MainWindow : Window
     }
     private async Task OpenAsync()
     {
+        if (!_session.CanSwitchSong()) return;
         var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
         { Title = "Open an RMS project folder", AllowMultiple = false });
         var path = folders.FirstOrDefault()?.Path.LocalPath;
         if (path != null) Run(() => _session.TryOpen(path));
+    }
+    private async Task SaveAsAsync()
+    {
+        if (_session.Project == null) { _session.Tell("Create or open a song first."); return; }
+        if (!_session.CanSwitchSong()) return;
+        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        { Title = "Choose an empty folder for the copy", AllowMultiple = false });
+        var path = folders.FirstOrDefault()?.Path.LocalPath;
+        if (path != null) Run(() => _session.SaveAs(path));
     }
     private async Task ImportAsync()
     {
@@ -454,14 +494,20 @@ public partial class MainWindow : Window
     }
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.Source is TextBox or Slider or ComboBox or Avalonia.Controls.Button) return;
-        var command = e.KeyModifiers.HasFlag(KeyModifiers.Meta) || e.KeyModifiers.HasFlag(KeyModifiers.Control);
+        var command = e.KeyModifiers.HasFlag(OperatingSystem.IsMacOS() ? KeyModifiers.Meta : KeyModifiers.Control);
+        var textInput = e.Source is Visual source && source.GetSelfAndVisualAncestors().Any(v => v is TextBox);
+        if (e.KeyModifiers.HasFlag(KeyModifiers.Alt)) return;
+        if (textInput && !(command && e.Key == Key.S)) return;
         if (command && e.Key == Key.S) Run(_session.Save);
+        else if (command && e.Key == Key.Z && e.KeyModifiers.HasFlag(KeyModifiers.Shift)) Run(_session.Redo);
         else if (command && e.Key == Key.Z) Run(_session.Undo);
         else if (command && e.Key == Key.Y) Run(_session.Redo);
+        else if (command) return;
+        else if (e.Source is Slider or ComboBox or Avalonia.Controls.Button or CheckBox) return;
         else if (e.Key == Key.Space) Run(_session.PlayPause);
         else if (e.Key == Key.R) Run(_session.Record);
         else if (e.Key == Key.L) Run(_session.ToggleLoop);
+        else if (e.Key == Key.Home) Run(_session.GoToStart);
         else return;
         e.Handled = true;
     }
