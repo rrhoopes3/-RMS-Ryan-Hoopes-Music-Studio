@@ -38,3 +38,4 @@ The portable window uses start/end fields for range and comp selection instead o
 - FFmpeg runs as a local process only during file conversion; live recording and playback use PortAudio. It is not bundled because distributions use different FFmpeg builds and licenses.
 - Existing RMS project folders can be moved between operating systems. Keep each folder's `project.json` and `media/` directory together.
 - The test suite validates portable model, recording recovery, and DSP behavior. A macOS device/WAV/import/export round trip was run during development. Linux packages are cross-built and need a Linux hardware check before a public release.
+- During the October 3 polish check, live playback on the local Mac stalled while PortAudio opened a CoreAudio stream (`Pa_OpenStream` → `AudioUnitSetProperty`). The UI and offline export checks do not verify this hardware path; live Mac playback/recording still needs investigation. Windows uses its separate WASAPI engine.

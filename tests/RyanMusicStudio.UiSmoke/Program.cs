@@ -62,8 +62,14 @@ internal static class Program
         window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
         window.UpdateLayout();
         var content = (FrameworkElement)window.Content;
-        var image = new RenderTargetBitmap((int)Math.Ceiling(content.ActualWidth),
-            (int)Math.Ceiling(content.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+        // RenderTargetBitmap retains the content's layout offset, including an outer margin.
+        var width = (int)Math.Ceiling(content.ActualWidth + content.Margin.Left + content.Margin.Right);
+        var height = (int)Math.Ceiling(content.ActualHeight + content.Margin.Top + content.Margin.Bottom);
+        var image = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+        var background = new DrawingVisual();
+        using (var drawing = background.RenderOpen())
+            drawing.DrawRectangle(window.Background, null, new Rect(0, 0, width, height));
+        image.Render(background);
         image.Render(content);
         var png = new PngBitmapEncoder();
         png.Frames.Add(BitmapFrame.Create(image));
