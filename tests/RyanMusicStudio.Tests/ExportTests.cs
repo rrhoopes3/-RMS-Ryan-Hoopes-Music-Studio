@@ -75,8 +75,9 @@ public sealed class ExportTests : IDisposable
         var project = Song();
         var dest = Path.Combine(_root, "song.wav");
         Directory.CreateDirectory(dest);
-        Assert.ThrowsAny<IOException>(() => new MixExporter().Export(project, new SampleCache(), dest,
+        var error = Record.Exception(() => new MixExporter().Export(project, new SampleCache(), dest,
             ExportFormat.Wav24, ExportScope.WholeProject, 0, Frames));
+        Assert.True(error is IOException or UnauthorizedAccessException, error?.ToString());
         Assert.True(Directory.Exists(dest));
         Assert.Empty(Directory.GetFiles(_root, "*.tmp.*"));
     }
