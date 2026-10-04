@@ -24,6 +24,16 @@ public sealed class ProjectFileDto
     public List<MediaDto> Media { get; set; } = [];
     public List<TrackDto> Tracks { get; set; } = [];
     public MasterDto Master { get; set; } = new();
+    public StudioDto? Studio { get; set; }
+}
+
+public sealed class StudioDto
+{
+    public List<bool> Kick { get; set; } = [];
+    public List<bool> Snare { get; set; } = [];
+    public List<bool> Hat { get; set; } = [];
+    public List<int> Melody { get; set; } = [];
+    public int VolumePercent { get; set; } = 80;
 }
 
 public sealed class TimeSignatureDto
@@ -186,7 +196,8 @@ public static class ProjectMapper
             GainDb = p.Master.GainDb,
             LimiterEnabled = p.Master.LimiterEnabled,
             LimiterCeilingDb = p.Master.LimiterCeilingDb
-        }
+        },
+        Studio = ToStudioDto(p.Studio)
     };
 
     public static ProjectDocument FromDto(ProjectFileDto d) => new()
@@ -233,7 +244,8 @@ public static class ProjectMapper
             GainDb = d.Master.GainDb,
             LimiterEnabled = d.Master.LimiterEnabled,
             LimiterCeilingDb = d.Master.LimiterCeilingDb
-        }
+        },
+        Studio = FromStudioDto(d.Studio)
     };
 
     private static TrackDto ToTrackDto(Track t) => new()
@@ -352,6 +364,32 @@ public static class ProjectMapper
             Parameters = new Dictionary<string, double>(e.Parameters)
         }).ToList()
     };
+
+    private static StudioDto ToStudioDto(SongSketch sketch)
+    {
+        sketch.Normalize();
+        return new StudioDto
+        {
+            Kick = sketch.Kick.ToList(),
+            Snare = sketch.Snare.ToList(),
+            Hat = sketch.Hat.ToList(),
+            Melody = sketch.Melody.ToList(),
+            VolumePercent = sketch.VolumePercent
+        };
+    }
+
+    private static SongSketch FromStudioDto(StudioDto? dto)
+    {
+        var sketch = new SongSketch();
+        if (dto == null) return sketch;
+        sketch.Kick = dto.Kick;
+        sketch.Snare = dto.Snare;
+        sketch.Hat = dto.Hat;
+        sketch.Melody = dto.Melody;
+        sketch.VolumePercent = dto.VolumePercent;
+        sketch.Normalize();
+        return sketch;
+    }
 
     private static DateTimeOffset ParseTime(string value) =>
         DateTimeOffset.TryParse(value, out var t) ? t : DateTimeOffset.UtcNow;

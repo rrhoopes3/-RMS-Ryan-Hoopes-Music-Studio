@@ -1,262 +1,121 @@
-﻿<Window x:Class="RyanMusicStudio.App.MainWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:ctrl="clr-namespace:RyanMusicStudio.App.Controls"
-        Title="RMS — Ryan Music Studio"
-        Height="820" Width="1280" MinHeight="640" MinWidth="980"
-        Background="{StaticResource BoothBrush}"
-        Foreground="{StaticResource CreamBrush}"
-        PreviewKeyDown="OnKeyDown"
-        AllowDrop="True"
-        Drop="OnDrop"
-        DragOver="OnDragOver"
-        Closing="OnClosing">
-    <DockPanel>
-        <Menu DockPanel.Dock="Top">
-            <MenuItem Header="_File">
-                <MenuItem Header="New Vocal Session…" Click="NewSession_Click" InputGestureText="Ctrl+N"/>
-                <MenuItem Header="Open Project…" Click="Open_Click" InputGestureText="Ctrl+O"/>
-                <MenuItem Header="Save" Click="Save_Click" InputGestureText="Ctrl+S"/>
-                <MenuItem Header="Save As…" Click="SaveAs_Click"/>
-                <Separator/>
-                <MenuItem Header="Import backing track…" Click="ImportBacking_Click" InputGestureText="Ctrl+I"/>
-                <Separator/>
-                <MenuItem Header="Export Song…" Click="GoExport_Click"/>
-                <MenuItem Header="Exit" Click="Exit_Click"/>
-            </MenuItem>
-            <MenuItem Header="_Edit">
-                <MenuItem Header="Undo" Click="Undo_Click" InputGestureText="Ctrl+Z"/>
-                <MenuItem Header="Redo" Click="Redo_Click" InputGestureText="Ctrl+Y"/>
-                <MenuItem Header="Split at playhead" Click="Split_Click" InputGestureText="S"/>
-                <MenuItem Header="Delete selected" Click="Delete_Click" InputGestureText="Delete"/>
-            </MenuItem>
-            <MenuItem Header="Trac_k">
-                <MenuItem Header="Add guitar track" Click="AddGuitarTrack_Click"/>
-                <MenuItem Header="Add vocal track" Click="AddVocalTrack_Click"/>
-                <MenuItem Header="Record into the selected track" Click="ArmTrack_Click"/>
-                <Separator/>
-                <MenuItem Header="Import backing track…" Click="ImportBacking_Click" InputGestureText="Ctrl+I"/>
-            </MenuItem>
-            <MenuItem Header="_Transport">
-                <MenuItem Header="Play / Stop" Click="Play_Click" InputGestureText="Space"/>
-                <MenuItem Header="Record another take" Click="Record_Click" InputGestureText="R"/>
-                <MenuItem Header="Go to start" Click="Home_Click" InputGestureText="Home"/>
-                <MenuItem Header="Loop region" Click="Loop_Click" InputGestureText="L"/>
-                <MenuItem Header="Click (not in export)" Click="Metronome_Click"/>
-            </MenuItem>
-            <MenuItem Header="_View">
-                <MenuItem Header="Home" Click="GoHome_Click"/>
-                <MenuItem Header="Audio Setup" Click="GoSetup_Click"/>
-                <MenuItem Header="Record" Click="GoArrange_Click"/>
-                <MenuItem Header="Mix" Click="GoMix_Click"/>
-                <MenuItem Header="Export" Click="GoExport_Click"/>
-                <MenuItem Header="Zoom in" Click="ZoomIn_Click" InputGestureText="Ctrl++"/>
-                <MenuItem Header="Zoom out" Click="ZoomOut_Click" InputGestureText="Ctrl+-"/>
-            </MenuItem>
-            <MenuItem Header="_Help">
-                <MenuItem Header="About RMS" Click="About_Click"/>
-            </MenuItem>
-        </Menu>
-
-        <Border DockPanel.Dock="Top" Background="#221A15" Padding="20,10">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="RMS" FontFamily="Palatino Linotype" FontWeight="Bold" FontSize="26" Foreground="{StaticResource CreamBrush}"/>
-                    <TextBlock Text="  Ryan Music Studio" FontFamily="Palatino Linotype" FontSize="14" Foreground="{StaticResource CopperBrush}" VerticalAlignment="Bottom" Margin="0,0,0,4"/>
-                </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <RadioButton x:Name="TabHome" Style="{StaticResource PlaceTab}" Content="Home" Checked="Place_Checked" Tag="Home" IsChecked="True"/>
-                    <RadioButton x:Name="TabSetup" Style="{StaticResource PlaceTab}" Content="Audio Setup" Checked="Place_Checked" Tag="Setup"/>
-                    <RadioButton x:Name="TabArrange" Style="{StaticResource PlaceTab}" Content="Record" Checked="Place_Checked" Tag="Arrange"/>
-                    <RadioButton x:Name="TabMix" Style="{StaticResource PlaceTab}" Content="Mix" Checked="Place_Checked" Tag="Mix"/>
-                    <RadioButton x:Name="TabExport" Style="{StaticResource PlaceTab}" Content="Export" Checked="Place_Checked" Tag="Export"/>
-                </StackPanel>
-                <TextBlock x:Name="ClockText" Grid.Column="2" FontFamily="Consolas" FontSize="18" VerticalAlignment="Center"/>
-            </Grid>
-        </Border>
-
-        <Border DockPanel.Dock="Bottom" Background="#221A15" Padding="16,10">
-            <DockPanel>
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button Style="{StaticResource PlainButton}" Content="Go to start  (Home)" Click="Home_Click" Margin="0,0,8,0" ToolTip="Home — jump to the beginning"/>
-                    <Button Style="{StaticResource PlainButton}" Content="Play  (Space)" Click="Play_Click" Margin="0,0,8,0" ToolTip="Space — play or stop"/>
-                    <Button x:Name="RecordBtn" Style="{StaticResource RecordButton}" Content="Record another take  (R)" Click="Record_Click" ToolTip="R — record a new vocal take"/>
-                    <Button Style="{StaticResource PlainButton}" Content="Stop" Click="Stop_Click" Margin="8,0,0,0"/>
-                </StackPanel>
-                <StackPanel>
-                    <TextBlock x:Name="StatusText" FontSize="15"/>
-                    <TextBlock x:Name="LyricsText" Foreground="{StaticResource CopperBrush}" Margin="0,4,0,0"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                        <TextBlock Text="Mic  " VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
-                        <ctrl:MeterBar x:Name="InMeter" Width="180" Height="12" Margin="0,0,16,0"/>
-                        <TextBlock Text="Song  " VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
-                        <ctrl:MeterBar x:Name="OutMeter" Width="180" Height="12"/>
-                        <TextBlock x:Name="ClipLabel" Text="  CLIP" Foreground="{StaticResource RecordBrush}" FontWeight="Bold" Visibility="Collapsed"/>
-                    </StackPanel>
-                </StackPanel>
-            </DockPanel>
-        </Border>
-
-        <Grid>
-            <ScrollViewer x:Name="HomePlace" VerticalScrollBarVisibility="Auto">
-                <StackPanel Margin="56,36" MaxWidth="760" HorizontalAlignment="Left">
-                    <TextBlock Text="RMS" Style="{StaticResource Wordmark}"/>
-                    <TextBlock Text="Ryan Music Studio" Style="{StaticResource Subtitle}" Margin="0,-8,0,16"/>
-                    <TextBlock TextWrapping="Wrap" FontSize="18" LineHeight="26"
-                               Text="Record your voice over a backing track and export a song. No account. Works offline. You do not need a professional studio app."/>
-                    <StackPanel Orientation="Horizontal" Margin="0,28,0,0">
-                        <Button Style="{StaticResource PrimaryButton}" Content="New Vocal Session" Click="NewSession_Click" FontSize="18" Padding="22,14" Margin="0,0,12,0"/>
-                        <Button Style="{StaticResource PlainButton}" Content="Open Project" Click="Open_Click" FontSize="18" Padding="22,14" Margin="0,0,12,0"/>
-                        <Button Style="{StaticResource PlainButton}" Content="Audio Setup" Click="GoSetup_Click" FontSize="18" Padding="22,14"/>
-                    </StackPanel>
-                    <TextBlock Text="Recent projects" FontSize="16" FontWeight="SemiBold" Margin="0,36,0,10"/>
-                    <ListBox x:Name="RecentList" Height="180" MouseDoubleClick="Recent_DoubleClick"/>
-                    <TextBlock Text="A session is just a folder on this computer. RMS never uploads your singing."
-                               Foreground="{StaticResource MutedBrush}" Margin="0,16,0,0" TextWrapping="Wrap"/>
-                </StackPanel>
-            </ScrollViewer>
-
-            <ScrollViewer x:Name="SetupPlace" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-                <StackPanel Margin="40,28" MaxWidth="820">
-                    <TextBlock Text="Audio Setup" FontSize="28" FontFamily="Palatino Linotype"/>
-                    <TextBlock TextWrapping="Wrap" Margin="0,8,0,20" Foreground="{StaticResource MutedBrush}"
-                               Text="Wear headphones so the backing track does not leak into the microphone. If your interface already lets you hear yourself (direct monitoring), turn software monitoring off so you do not hear two voices."/>
-                    <DockPanel>
-                        <Button DockPanel.Dock="Right" Style="{StaticResource PlainButton}" Content="Refresh list" Click="RefreshDevices_Click"
-                                FontSize="13" Padding="10,4" ToolTip="Plugged in a USB mic or interface? RMS also notices on its own."/>
-                        <TextBlock Text="Microphone or input" FontWeight="SemiBold" VerticalAlignment="Bottom"/>
-                    </DockPanel>
-                    <ComboBox x:Name="InputBox" DisplayMemberPath="Name" SelectionChanged="Input_Changed" Margin="0,6,0,4"/>
-                    <TextBlock x:Name="InputDetail" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
-                    <StackPanel x:Name="InputChannelRow" Margin="0,0,0,8">
-                        <TextBlock Text="Which input carries your mic or guitar?"/>
-                        <ComboBox x:Name="InputChannelBox" SelectionChanged="InputChannel_Changed" Margin="0,6,0,0" HorizontalAlignment="Left" MinWidth="320">
-                            <ComboBoxItem Content="Both channels (USB mics, most coax/S/PDIF sources)"/>
-                            <ComboBoxItem Content="Input 1 / left only"/>
-                            <ComboBoxItem Content="Input 2 / right only"/>
-                        </ComboBox>
-                    </StackPanel>
-                    <TextBlock Text="Mic level" FontWeight="SemiBold" Margin="0,4,0,6"/>
-                    <ctrl:MeterBar x:Name="SetupMeter" Height="18" Margin="0,0,0,6"/>
-                    <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,16"
-                               Text="Sing or play your loudest part. The bar should reach the amber zone but not turn red. If it barely moves, turn up the gain on your mic or interface (or in Windows Sound settings, Recording, Properties, Levels)."/>
-                    <TextBlock Text="Headphones / speakers" FontWeight="SemiBold"/>
-                    <ComboBox x:Name="OutputBox" DisplayMemberPath="Name" SelectionChanged="Output_Changed" Margin="0,6,0,4"/>
-                    <TextBlock x:Name="OutputDetail" Foreground="{StaticResource MutedBrush}"/>
-                    <TextBlock x:Name="LatencyWarn" Foreground="#E6B84D" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                    <CheckBox x:Name="ExclusiveBox" Content="Lower latency (WASAPI Exclusive) — use if the shared path feels late" Margin="0,16,0,8" Click="Exclusive_Click"/>
-                    <CheckBox x:Name="MonitorBox" Content="Software monitoring — hear the mic through RMS (turn off if you already hear yourself in the headphones)" Click="Monitor_Click"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                        <TextBlock Text="Buffer" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                        <Slider x:Name="BufferSlider" Minimum="8" Maximum="80" Width="200" TickFrequency="4" IsSnapToTickEnabled="True" ValueChanged="Buffer_Changed"/>
-                        <TextBlock x:Name="BufferLabel" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                        <TextBlock Text="Recording offset (ms)" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                        <Slider x:Name="OffsetSlider" Minimum="-80" Maximum="80" Width="200" ValueChanged="Offset_Changed"/>
-                        <TextBlock x:Name="OffsetLabel" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,24,0,0">
-                        <Button Style="{StaticResource PlainButton}" Content="Play a test tone" Click="Tone_Click" Margin="0,0,8,0"/>
-                        <Button Style="{StaticResource PrimaryButton}" Content="Record a short test" Click="TestTake_Click"/>
-                    </StackPanel>
-                    <Button Style="{StaticResource PrimaryButton}" Content="Sounds good — start recording" Click="SetupDone_Click" Margin="0,20,0,0" HorizontalAlignment="Left"/>
-                </StackPanel>
-            </ScrollViewer>
-
-            <Grid x:Name="ArrangePlace" Visibility="Collapsed">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="240"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="280"/>
-                </Grid.ColumnDefinitions>
-                <DockPanel Background="#221A15">
-                    <TextBlock DockPanel.Dock="Top" Text="Tracks" Margin="12,12,12,4" FontWeight="SemiBold"/>
-                    <TextBlock DockPanel.Dock="Top" Text="● marks the track R records into." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="12,0,12,8" FontSize="12"/>
-                    <StackPanel DockPanel.Dock="Bottom" Margin="12">
-                        <Button x:Name="ImportBtn" Style="{StaticResource PlainButton}" Content="Import backing track…" Click="ImportBacking_Click" Margin="0,0,0,8"
-                                ToolTip="Ctrl+I — copy a WAV or MP3 into the song. You can also drag a file onto the window."/>
-                        <Button Style="{StaticResource PlainButton}" Content="Add track ▾" Click="AddTrack_Click" Margin="0,0,0,8"
-                                ToolTip="Add a guitar or vocal track to record into">
-                            <Button.ContextMenu>
-                                <ContextMenu>
-                                    <MenuItem Header="Guitar track" Click="AddGuitarTrack_Click"/>
-                                    <MenuItem Header="Vocal track" Click="AddVocalTrack_Click"/>
-                                </ContextMenu>
-                            </Button.ContextMenu>
-                        </Button>
-                        <Button Style="{StaticResource PlainButton}" Content="Record into this track" Click="ArmTrack_Click"
-                                ToolTip="Select a track above, then click to make R record into it"/>
-                    </StackPanel>
-                    <ListBox x:Name="TrackList" SelectionChanged="TrackList_Changed"/>
-                </DockPanel>
-                <ctrl:TimelinePanel x:Name="Timeline" Grid.Column="1"/>
-                <DockPanel Grid.Column="2" Background="#221A15">
-                    <TextBlock DockPanel.Dock="Top" Text="Takes" Margin="12,12,12,4" FontWeight="SemiBold"/>
-                    <TextBlock DockPanel.Dock="Top" x:Name="TakesHint" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="12,0,12,8" FontSize="12"
-                               Text="Record several passes. Double-click a take to hear it, then choose the best parts."/>
-                    <StackPanel DockPanel.Dock="Bottom" Margin="12,8,12,12">
-                        <Button x:Name="CompBtn" Style="{StaticResource PlainButton}" Content="Choose best parts" Click="CompMode_Click" Margin="0,0,0,6"
-                                ToolTip="Turn on, then drag across the best part of a take on the timeline"/>
-                        <Button Style="{StaticResource PlainButton}" Content="Clear chosen parts" Click="ClearParts_Click" Margin="0,0,0,6" FontSize="14" Padding="10,6"/>
-                        <UniformGrid Columns="2" Margin="0,0,0,6">
-                            <Button Style="{StaticResource PlainButton}" Content="Split (S)" Click="Split_Click" Margin="0,0,3,0" FontSize="14" Padding="8,6"
-                                    ToolTip="Cut the selected clip at the playhead"/>
-                            <Button Style="{StaticResource PlainButton}" Content="Fade" Click="Fade_Click" Margin="3,0,0,0" FontSize="14" Padding="8,6"
-                                    ToolTip="Fade the selected clip in and out so it doesn't click"/>
-                        </UniformGrid>
-                        <UniformGrid Columns="2" Margin="0,0,0,8">
-                            <Button Style="{StaticResource PlainButton}" Content="◀ Earlier" Click="StretchEarly_Click" Margin="0,0,3,0" FontSize="14" Padding="8,6"
-                                    ToolTip="Nudge the selected take or clip 20 ms earlier"/>
-                            <Button Style="{StaticResource PlainButton}" Content="Later ▶" Click="StretchLate_Click" Margin="3,0,0,0" FontSize="14" Padding="8,6"
-                                    ToolTip="Nudge the selected take or clip 20 ms later"/>
-                        </UniformGrid>
-                        <TextBlock Text="Drag on the ruler to mark a range." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,0,0,4"/>
-                        <CheckBox x:Name="LoopBox" Content="Loop the marked range" Click="Loop_Click" Margin="0,0,0,2"/>
-                        <CheckBox x:Name="LoopRecBox" Click="LoopRec_Click" Margin="0,0,0,2">
-                            <TextBlock Text="Loop recording (a new take each pass)" TextWrapping="Wrap"/>
-                        </CheckBox>
-                        <CheckBox x:Name="PunchBox" Click="Punch_Click">
-                            <TextBlock Text="Punch in: re-record only the marked range" TextWrapping="Wrap"/>
-                        </CheckBox>
-                    </StackPanel>
-                    <ListBox x:Name="TakeList" MouseDoubleClick="Take_DoubleClick"/>
-                </DockPanel>
-            </Grid>
-
-            <ScrollViewer x:Name="MixPlace" Visibility="Collapsed" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                <StackPanel x:Name="MixerHost" Orientation="Horizontal" Margin="20"/>
-            </ScrollViewer>
-
-            <ScrollViewer x:Name="ExportPlace" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-                <StackPanel Margin="40,28" MaxWidth="640">
-                    <TextBlock Text="Export" FontSize="28" FontFamily="Palatino Linotype"/>
-                    <TextBlock TextWrapping="Wrap" Margin="0,8,0,16" Foreground="{StaticResource MutedBrush}"
-                               Text="This is the mix you hear while playing, without the click and without a reference track."/>
-                    <TextBlock Text="How much to export"/>
-                    <ComboBox x:Name="ScopeBox" Margin="0,6,0,12">
-                        <ComboBoxItem Content="Whole song" IsSelected="True"/>
-                        <ComboBoxItem Content="Selected range"/>
-                        <ComboBoxItem Content="Vocals only"/>
-                        <ComboBoxItem Content="Everything except vocals (backing, guitar)"/>
-                    </ComboBox>
-                    <TextBlock Text="File type"/>
-                    <ComboBox x:Name="FormatBox" Margin="0,6,0,16">
-                        <ComboBoxItem Content="WAV 16-bit" IsSelected="True"/>
-                        <ComboBoxItem Content="WAV 24-bit"/>
-                        <ComboBoxItem Content="MP3"/>
-                    </ComboBox>
-                    <StackPanel Orientation="Horizontal">
-                        <Button Style="{StaticResource PlainButton}" Content="Play a final check" Click="Play_Click" Margin="0,0,8,0"/>
-                        <Button Style="{StaticResource PrimaryButton}" Content="Export song…" Click="Export_Click"/>
-                    </StackPanel>
-                </StackPanel>
-            </ScrollViewer>
-        </Grid>
-    </DockPanel>
+<Window x:Class="RyanMusicStudio.App.MainWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:controls="clr-namespace:RyanMusicStudio.App.Controls"
+ Title="RMS" Height="980" Width="1320" MinHeight="760" MinWidth="1020"
+ Background="#E7EEF2" Foreground="#1A2428" FontFamily="Segoe UI" FontSize="14"
+ WindowStartupLocation="CenterScreen" Loaded="OnLoaded" Closing="OnClosing" PreviewKeyDown="OnKeyDown"
+ AllowDrop="True" DragOver="Audio_DragOver" Drop="Audio_Drop">
+ <Window.Resources>
+  <Style x:Key="QuietButton" TargetType="Button">
+   <Setter Property="Background" Value="#F7FBFC"/><Setter Property="Foreground" Value="#1A2428"/>
+   <Setter Property="MinHeight" Value="34"/><Setter Property="Padding" Value="12,5"/>
+   <Setter Property="Margin" Value="0,0,6,4"/><Setter Property="BorderBrush" Value="#C5D0D6"/>
+  </Style>
+  <Style TargetType="Button" BasedOn="{StaticResource QuietButton}"/>
+  <Style x:Key="StepButton" TargetType="Button" BasedOn="{StaticResource QuietButton}">
+   <Setter Property="Width" Value="44"/><Setter Property="Height" Value="36"/>
+   <Setter Property="Margin" Value="2"/><Setter Property="Padding" Value="0"/>
+  </Style>
+  <Style x:Key="KeyButton" TargetType="Button" BasedOn="{StaticResource QuietButton}">
+   <Setter Property="Width" Value="58"/><Setter Property="Height" Value="40"/>
+  </Style>
+  <Style TargetType="ComboBox"><Setter Property="MinHeight" Value="30"/><Setter Property="VerticalContentAlignment" Value="Center"/></Style>
+  <Style TargetType="TextBox"><Setter Property="MinHeight" Value="30"/><Setter Property="VerticalContentAlignment" Value="Center"/></Style>
+ </Window.Resources>
+ <Grid Margin="20,14">
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <DockPanel>
+   <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+    <Button x:Name="NewButton" Content="New song" Click="New_Click"/>
+    <Button x:Name="OpenButton" Content="Open" Click="Open_Click"/>
+    <Button x:Name="SaveButton" Content="Save" Click="Save_Click"/>
+    <Button x:Name="SaveAsButton" Content="Save as…" Click="SaveAs_Click"/>
+   </StackPanel>
+   <StackPanel><TextBlock Text="RMS · Your studio" FontFamily="Georgia" FontSize="26" FontWeight="Bold"/>
+    <TextBlock x:Name="SongName" Text="Opening your song…" Foreground="#5C6B72" Margin="0,2,0,8"/></StackPanel>
+  </DockPanel>
+  <Border Grid.Row="1" Background="#F7FBFC" CornerRadius="10" Padding="12" Margin="0,4,0,10">
+   <StackPanel>
+    <WrapPanel VerticalAlignment="Center">
+     <Button x:Name="PlayButton" Content="Play / Pause" Background="#0E7C66" Foreground="White" FontSize="18" Click="Play_Click"/>
+     <Button x:Name="StopButton" Content="Stop" FontSize="18" Click="Stop_Click"/>
+     <Button Content="Return to start" Click="Start_Click"/>
+     <Button x:Name="RecordButton" Content="Record" FontSize="18" Click="Record_Click" AutomationProperties.Name="Record armed track"/>
+     <TextBlock x:Name="RecordingState" Margin="12,0" VerticalAlignment="Center" FontWeight="SemiBold"/>
+     <TextBlock x:Name="PositionText" Margin="12,0" VerticalAlignment="Center" FontFamily="Consolas"/>
+    </WrapPanel>
+    <Grid Margin="0,8,0,0">
+     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+     <StackPanel><TextBlock Text="Microphone / input"/><ComboBox x:Name="MicBox" DisplayMemberPath="Name" SelectedValuePath="Id" SelectionChanged="Mic_Changed" AutomationProperties.Name="Audio input"/>
+      <controls:MeterBar x:Name="InputMeter" Height="16" Margin="0,5,0,0" AutomationProperties.Name="Input level"/>
+     </StackPanel>
+     <StackPanel Grid.Column="2"><TextBlock Text="Speakers / output"/><ComboBox x:Name="SpeakerBox" DisplayMemberPath="Name" SelectedValuePath="Id" SelectionChanged="Speaker_Changed" AutomationProperties.Name="Audio output"/>
+      <controls:MeterBar x:Name="OutputMeter" Height="16" Margin="0,5,0,0" AutomationProperties.Name="Output level"/>
+     </StackPanel>
+    </Grid>
+    <WrapPanel Margin="0,8,0,0" VerticalAlignment="Center">
+     <TextBlock Text="Tempo" VerticalAlignment="Center" Margin="0,0,6,0"/>
+     <Button Content="−" Click="TempoDown_Click" AutomationProperties.Name="Slower"/>
+     <TextBlock x:Name="TempoText" Text="100" Width="42" VerticalAlignment="Center" TextAlignment="Center"/>
+     <Button Content="+" Click="TempoUp_Click" AutomationProperties.Name="Faster"/>
+     <Button Content="Click on/off" Click="Metronome_Click"/>
+     <TextBlock Text="Master volume" VerticalAlignment="Center" Margin="14,0,6,0"/>
+     <Slider x:Name="VolumeSlider" Width="150" Minimum="0" Maximum="100" Value="80" ValueChanged="Volume_Changed" VerticalAlignment="Center" AutomationProperties.Name="Master volume"/>
+     <TextBlock x:Name="VolumeText" Width="32" VerticalAlignment="Center" Margin="6,0"/>
+     <TextBlock x:Name="ArmedText" Margin="12,0,0,0" VerticalAlignment="Center"/>
+    </WrapPanel>
+   </StackPanel>
+  </Border>
+  <Border x:Name="Banner" Grid.Row="2" Visibility="Collapsed" Background="#FFF4E5" Padding="10" Margin="0,0,0,8">
+   <TextBlock x:Name="BannerText" TextWrapping="Wrap"/>
+  </Border>
+  <Grid Grid.Row="3">
+   <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+   <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="350"/></Grid.ColumnDefinitions>
+   <Grid>
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <WrapPanel x:Name="TrackTools">
+     <TextBox x:Name="TrackNameBox" Width="140" Text="My voice" Margin="0,0,6,4" AutomationProperties.Name="New track name"/>
+     <ComboBox x:Name="TrackTypeBox" Width="88" SelectedIndex="0" Margin="0,0,6,4" AutomationProperties.Name="New track type"><ComboBoxItem Content="Voice"/><ComboBoxItem Content="Guitar"/><ComboBoxItem Content="Other"/></ComboBox>
+     <Button Content="+ Track" Click="AddTrack_Click"/><Button Content="Arm selected" Click="Arm_Click"/>
+     <Button Content="Import WAV / MP3" Click="Import_Click"/>
+    </WrapPanel>
+    <WrapPanel x:Name="EditTools" Grid.Row="1">
+     <Button x:Name="UndoButton" Content="Undo" Click="Undo_Click"/><Button x:Name="RedoButton" Content="Redo" Click="Redo_Click"/>
+     <Button Content="Split" Click="Split_Click"/><Button Content="Delete" Click="Delete_Click"/>
+     <Button Content="Zoom −" Click="ZoomOut_Click"/><Button Content="Zoom +" Click="ZoomIn_Click"/>
+     <Button x:Name="LoopButton" Content="Loop off" Click="Loop_Click"/><Button x:Name="PunchButton" Content="Punch off" Click="Punch_Click"/>
+     <Button x:Name="CompButton" Content="Choose takes" Click="Comp_Click"/>
+    </WrapPanel>
+    <Border Grid.Row="2" Background="#1A2428" MinHeight="130">
+     <controls:TimelinePanel x:Name="Timeline" AutomationProperties.Name="Song timeline"/>
+    </Border>
+    <TextBlock Grid.Row="3" Text="Click the ruler to seek; drag across it to select a range. Drag clips to move. Wheel scrolls lanes; Shift+wheel scrolls time." TextWrapping="Wrap" Foreground="#5C6B72" Margin="0,5"/>
+   </Grid>
+   <Grid Grid.Column="2">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+    <TextBlock Text="Track mixer" FontWeight="SemiBold" FontSize="18" Margin="0,0,0,6"/>
+    <controls:TrackMixerPanel x:Name="Mixer" Grid.Row="1" Background="#202B31"/>
+   </Grid>
+   <Expander Grid.Row="1" Grid.ColumnSpan="3" Header="Drums &amp; melody · tap pads to build your song" IsExpanded="False" Margin="0,8,0,0">
+    <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+     <StackPanel Margin="8">
+      <Grid x:Name="DrumGrid"/><TextBlock Text="Melody · choose a piano key, then tap a step" Margin="0,8"/>
+      <StackPanel x:Name="PianoRow" Orientation="Horizontal"/><Grid x:Name="MelodyGrid"/>
+      <TextBlock x:Name="EmptyText" Text="Tap drum pads or melody steps, or add a track and record." Margin="0,8" Foreground="#5C6B72"/>
+     </StackPanel>
+    </ScrollViewer>
+   </Expander>
+  </Grid>
+  <StackPanel Grid.Row="4" Margin="0,10,0,0">
+   <WrapPanel x:Name="ExportTools">
+    <TextBlock Text="Export" VerticalAlignment="Center" Margin="0,0,8,0"/>
+    <ComboBox x:Name="ExportFormatBox" Width="118" SelectedIndex="0" Margin="0,0,8,0" AutomationProperties.Name="Export format"><ComboBoxItem Content="WAV 16-bit"/><ComboBoxItem Content="WAV 24-bit"/><ComboBoxItem Content="MP3"/></ComboBox>
+    <ComboBox x:Name="ExportScopeBox" Width="160" SelectedIndex="0" Margin="0,0,8,0" AutomationProperties.Name="Export scope"><ComboBoxItem Content="Whole mix"/><ComboBoxItem Content="Selected range"/><ComboBoxItem Content="Voice stem"/><ComboBoxItem Content="Backing stem"/></ComboBox>
+    <Button x:Name="ExportButton" Content="Export audio…" Click="Export_Click"/>
+    <ProgressBar x:Name="ExportProgress" IsIndeterminate="True" Width="140" Height="12" Visibility="Collapsed" AutomationProperties.Name="Export in progress"/>
+   </WrapPanel>
+   <TextBlock x:Name="StatusText" TextWrapping="Wrap" Margin="0,5,0,0" Text="Opening your song…"/>
+  </StackPanel>
+ </Grid>
 </Window>

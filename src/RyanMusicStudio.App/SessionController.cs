@@ -6,6 +6,7 @@ using RyanMusicStudio.Core.Dsp;
 using RyanMusicStudio.Core.Editing;
 using RyanMusicStudio.Core.Model;
 using RyanMusicStudio.Core.Persistence;
+using RyanMusicStudio.Core.Studio;
 using RyanMusicStudio.Core.Timeline;
 using RyanMusicStudio.Engine.Audio;
 using RyanMusicStudio.Engine.Devices;
@@ -35,7 +36,7 @@ public sealed class SessionController : IDisposable
     private readonly DispatcherTimer _deviceRescan = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private UserSettings _settings = UserSettings.Load();
 
-    private const string NoSongMessage = "Start a New Vocal Session or open a song first.";
+    private const string NoSongMessage = "RMS does not have a song open yet.";
     private string? _heardBeforeTake; // the take the armed track played when R was pressed
     private bool _shuttingDown;
     private Task? _testTakeTask;
@@ -65,6 +66,9 @@ public sealed class SessionController : IDisposable
     public bool Clipping { get; private set; }
     public bool CanUndo => _undo.CanUndo;
     public bool CanRedo => _undo.CanRedo;
+    public bool Loading { get; private set; }
+    public string? Problem { get; private set; }
+    public int MelodyPen { get; private set; }
 
     public SessionController()
     {
@@ -113,6 +117,7 @@ public sealed class SessionController : IDisposable
             _deviceRescan.Stop();
             RescanDevices();
         };
+        _engine.MetronomeEnabled = false;
         _clock.Start();
         _autosave.Start();
         RefreshDevices();
@@ -179,7 +184,7 @@ public sealed class SessionController : IDisposable
         if (SelectedOutput == null && !string.IsNullOrEmpty(_settings.OutputDeviceId)) missing.Add("headphones");
         if (missing.Count == 0) return false;
         _devicesMissing = true;
-        SetStatus($"Your chosen {string.Join(" and ", missing)} isn't plugged in. Plug it back in, or pick another on Audio Setup.");
+        SetStatus($"Your chosen {string.Join(" and ", missing)} isn't plugged in. Plug it back in, or pick another from the Microphone or Speakers list.");
         return true;
     }
 
@@ -296,6 +301,33 @@ public sealed class SessionController : IDisposable
         !BusyRecording("Stop recording first (press R or Space), then switch songs.") &&
         !TakeSaveFailed();
 
+    public void NewStudioSong(string name, string parentFolder, double tempo, int num, int den, int sampleRate)
+    {
+        if (!CanSwitchSong()) return;
+        var requestedName = name.Trim();
+        name = requestedName;
+        var root = Path.Combine(parentFolder, Sanitize(requestedName));
+        var project = ProjectFactory.CreateStudioSong(requestedName, root, tempo, sampleRate);
+        if (num < 1 || num > 32 || den is not (1 or 2 or 4 or 8 or 16 or 32))
+            throw new ArgumentException("Choose a valid time signature.");
+        project.TimeSignature = new TimeSignature { Numerator = num, Denominator = den };
+        if (!LeaveProject()) return;
+        for (var n = 2; Directory.Exists(root) || File.Exists(root); n++)
+        {
+            name = $"{requestedName} ({n})";
+            root = Path.Combine(parentFolder, Sanitize(name));
+        }
+        project.Name = name;
+        project.RootPath = root;
+        VocalPresets.Apply(project.Tracks.First(t => t.Role == TrackRole.Vocal), VocalPresets.Clean);
+        StudioBedWriter.Write(project);
+        project.Loop.Enabled = false;
+        _store.Save(project);
+        OpenLoaded(project);
+        SetStatus($"{project.Name} is ready. Build a beat, import audio, or record on the Voice track.");
+        Go(_settings.AudioSetupConfirmed ? StudioPlace.Arrange : StudioPlace.Setup);
+    }
+
     public void NewVocalSession(string name, string parentFolder, double tempo, int num, int den, int sampleRate)
     {
         if (!CanSwitchSong() || !LeaveProject()) return;
@@ -322,7 +354,7 @@ public sealed class SessionController : IDisposable
         if (!CanSwitchSong()) return false;
         if (!ProjectPaths.LooksLikeProject(root))
         {
-            SetStatus("That folder is not an RMS project.");
+            SetStatus("That folder is not a song RMS can open.");
             return false;
         }
         if (!useAutosave && Project != null && SamePath(root, Project.RootPath))
@@ -357,7 +389,8 @@ public sealed class SessionController : IDisposable
         if (BusyRecording("Stop recording first, then save.") || TakeSaveFailed()) return;
         _store.Save(Project);
         _settings.RememberProject(Project.Name, Project.RootPath);
-        SetStatus("Project saved.");
+        Problem = null;
+        SetStatus("Saved.");
     }
 
     public void SaveAs(string newRoot)
@@ -415,7 +448,285 @@ public sealed class SessionController : IDisposable
             return;
         }
         SetStatus($"{Path.GetFileName(path)} copied onto {target.Name}. The original file was left untouched.");
+        SelectedTrackId = target.Id;
+        SelectedClipId = target.Clips.LastOrDefault()?.Id;
         Raise();
+    }
+
+    public void StartStudio()
+    {
+        Loading = true;
+        Problem = null;
+        SetStatus("Opening your song…");
+        try
+        {
+            _engine.MetronomeEnabled = false;
+            var opened = false;
+            foreach (var recent in _settings.Recent)
+            {
+                if (!ProjectPaths.LooksLikeProject(recent.Path)) continue;
+                opened = TryOpen(recent.Path);
+                break;
+            }
+
+            if (!opened && Project == null)
+            {
+                var folder = DefaultSongFolder();
+                Directory.CreateDirectory(Path.GetDirectoryName(folder)!);
+                if (ProjectPaths.LooksLikeProject(folder))
+                    opened = TryOpen(folder);
+                if (!opened && Project == null && ProjectPaths.LooksLikeProject(folder))
+                {
+                    Problem = "RMS could not open your song. Press Open and choose the song folder.";
+                    SetStatus(Problem);
+                }
+                else if (!opened && Project == null)
+                {
+                    var project = ProjectFactory.CreateStudioSong("My Song", folder, 100, 48000);
+                    VocalPresets.Apply(project.Tracks.First(t => t.Role == TrackRole.Vocal), VocalPresets.Clean);
+                    StudioBedWriter.Write(project);
+                    _store.Save(project);
+                    OpenLoaded(project);
+                }
+            }
+
+            if (Project != null && Problem == null)
+            {
+                EnsureStudioAudio();
+                SayReady();
+            }
+        }
+        catch (Exception ex)
+        {
+            Problem = "RMS could not open your song. " + ex.Message;
+            SetStatus(Problem);
+        }
+        finally
+        {
+            Loading = false;
+            Raise();
+        }
+    }
+
+    public void OpenSongFolder(string root)
+    {
+        Loading = true;
+        Problem = null;
+        SetStatus("Opening your song…");
+        try
+        {
+            if (!TryOpen(root))
+            {
+                Problem = string.IsNullOrWhiteSpace(Status)
+                    ? "That folder is not a song RMS can open."
+                    : Status;
+                SetStatus(Problem);
+                return;
+            }
+            EnsureStudioAudio();
+            SayReady();
+        }
+        catch (Exception ex)
+        {
+            Problem = "RMS could not open that song. " + ex.Message;
+            SetStatus(Problem);
+        }
+        finally
+        {
+            Loading = false;
+            Raise();
+        }
+    }
+
+    public void PlayFromStart()
+    {
+        if (Project == null)
+        {
+            SetStatus(Problem ?? NoSongMessage);
+            return;
+        }
+        if (_engine.IsTakeActive)
+        {
+            SetStatus("You are recording. Press Stop when you are done.");
+            return;
+        }
+        try
+        {
+            _engine.Stop();
+            _engine.SetPlayhead(0);
+            _engine.Play();
+            Problem = null;
+        SetStatus(StudioSong.LooksEmpty(Project)
+            ? "This song is quiet. Tap the drum boxes or piano keys, then press Play."
+            : "Playing.");
+        }
+        catch (Exception)
+        {
+            Problem = "RMS can't play sound yet. Plug in speakers or headphones, then press Play again.";
+            SetStatus(Problem);
+        }
+    }
+
+    public void StopSong()
+    {
+        var wasRecording = _engine.IsTakeActive;
+        Stop();
+        if (!wasRecording)
+            _engine.SetPlayhead(0);
+        if (Project != null && StudioSong.LooksEmpty(Project))
+            SetStatus("Stopped. This song is quiet. Tap the drum boxes or piano keys, then press Play.");
+        else if (!wasRecording)
+            SetStatus("Stopped.");
+    }
+
+    public void NudgeTempo(int delta)
+    {
+        if (Project == null || BusyRecording("Stop recording first, then change the tempo.")) return;
+        var next = Math.Clamp(Math.Round(Project.TempoBpm + delta), 60, 180);
+        if (Math.Abs(next - Project.TempoBpm) < 0.1) return;
+        Project.TempoBpm = next;
+        RefreshStudioBedPreservingLoop();
+        SetStatus("Tempo is " + (int)next + ".");
+    }
+
+    public void SetVolume(int percent)
+    {
+        if (Project == null) return;
+        percent = Math.Clamp(percent, 0, 100);
+        if (Project.Studio.VolumePercent == percent) return;
+        Project.Studio.VolumePercent = percent;
+        StudioSong.ApplyVolume(Project);
+        _engine.NotifyProjectChanged();
+        SetStatus(percent == 0 ? "Volume is all the way down." : "Volume is " + percent + ".");
+    }
+
+    public void ToggleDrum(DrumVoice voice, int step)
+    {
+        if (Project == null) return;
+        var on = Project.Studio.ToggleDrum(voice, step);
+        RefreshStudioBedPreservingLoop();
+        var name = voice switch
+        {
+            DrumVoice.Kick => "Kick",
+            DrumVoice.Snare => "Snare",
+            _ => "Hat"
+        };
+        Problem = null;
+        if (Project.Studio.VolumePercent == 0)
+        {
+            SetStatus(on
+                ? name + " is on. Turn Volume up to hear it."
+                : name + " is off. Volume is all the way down.");
+            return;
+        }
+        if (!_engine.IsSongPlaying)
+            _engine.PreviewSamples(StudioSynth.PreviewDrum(Project.Studio, voice, Project.SampleRate), Project.SampleRate);
+        SetStatus(on ? name + " is on." : name + " is off.");
+    }
+
+    public void ChooseMelodyKey(int degree)
+    {
+        if (degree < 0 || degree >= SongSketch.NoteNames.Length) return;
+        MelodyPen = degree;
+        if (Project == null)
+        {
+            SetStatus(SongSketch.NoteName(degree) + " selected. Tap a melody box to place it.");
+            return;
+        }
+        if (Project.Studio.VolumePercent == 0)
+        {
+            SetStatus(SongSketch.NoteName(degree) + " selected. Turn Volume up to hear it.");
+            return;
+        }
+        if (!_engine.IsSongPlaying)
+            _engine.PreviewSamples(StudioSynth.PreviewNote(Project.Studio, degree, Project.SampleRate), Project.SampleRate);
+        SetStatus(SongSketch.NoteName(degree) + " selected. Tap a melody box to place it.");
+    }
+
+    public void PlaceMelody(int step)
+    {
+        if (Project == null) return;
+        Project.Studio.SetMelody(step, MelodyPen);
+        RefreshStudioBedPreservingLoop();
+        var name = SongSketch.NoteName(Project.Studio.Melody[Math.Clamp(step, 0, SongSketch.StepCount - 1)]);
+        Problem = null;
+        SetStatus(string.IsNullOrEmpty(name)
+            ? "That melody box is empty."
+            : name + " is in the melody.");
+    }
+
+    public void RecordVoice()
+    {
+        if (_engine.IsRecording || _engine.IsTakeActive)
+        {
+            Stop();
+            SetStatus("Recording stopped. Press Play to hear it with the beat.");
+            return;
+        }
+        Record();
+        if (_engine.IsTakeActive)
+            SetStatus("Recording. Sing or play, then press Stop.");
+    }
+
+    public int CurrentStep => Project == null
+        ? 0
+        : StudioSong.StepAt(Project.SampleRate, Project.TempoBpm, _engine.PlayheadFrames,
+            Project.TimeSignature.Numerator, Project.TimeSignature.Denominator);
+
+    public static string DefaultSongFolder()
+    {
+        var music = Environment.GetFolderPath(Environment.SpecialFolder.MyMusic);
+        if (string.IsNullOrWhiteSpace(music))
+            music = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return Path.Combine(music, "RMS", "My Song");
+    }
+
+    private void RestoreStudioAfterRecord()
+    {
+        if (Project == null || !StudioSong.HasBed(Project)) return;
+        RefreshStudioBedPreservingLoop();
+    }
+
+    private void RefreshStudioBedPreservingLoop()
+    {
+        if (Project == null) return;
+        var loop = (Project.Loop.Enabled, Project.Loop.StartFrame, Project.Loop.EndFrame);
+        try { _engine.RefreshStudioBed(); }
+        finally
+        {
+            (Project.Loop.Enabled, Project.Loop.StartFrame, Project.Loop.EndFrame) = loop;
+            _engine.NotifyProjectChanged();
+        }
+    }
+
+    private void EnsureStudioAudio()
+    {
+        if (Project == null) return;
+        var absolute = Path.Combine(Project.RootPath, StudioSong.BedRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        var referenced = StudioSong.HasBed(Project);
+        if (!referenced && Project.Studio.IsEmpty) return;
+        if (!referenced || !File.Exists(absolute))
+            RefreshStudioBedPreservingLoop();
+        else
+        {
+            StudioSong.ApplyVolume(Project, touch: false);
+            if (StudioSong.NeedsFit(Project))
+                RefreshStudioBedPreservingLoop();
+            _engine.NotifyProjectChanged();
+        }
+    }
+
+    private void SayReady()
+    {
+        Problem = null;
+        if (Project == null)
+        {
+            SetStatus(NoSongMessage);
+            return;
+        }
+        SetStatus(StudioSong.LooksEmpty(Project)
+            ? "This song is quiet. Tap the drum boxes or piano keys, then press Play."
+            : "Press Play to hear your song.");
     }
 
     public void PlayPause()
@@ -464,16 +775,25 @@ public sealed class SessionController : IDisposable
             SetStatus("Wait for the test take to finish, then press R.");
             return;
         }
-        var armed = Project.Tracks.FirstOrDefault(t => t.Armed) ?? Project.Tracks.FirstOrDefault(t => t.Role == TrackRole.Vocal);
+        if (TakeSaveFailed()) return;
+        var armed = ProjectFactory.RecordingTarget(Project, SelectedTrackId);
+        if (armed == null)
+        {
+            SetStatus("Select a voice or instrument track and arm it before recording. Use Add track if you need a new lane.");
+            return;
+        }
+        ArmOnly(armed);
+        SelectedTrackId = armed.Id;
         _heardBeforeTake = armed?.AuditionTakeId;
         try
         {
             _engine.StartRecord();
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             Stop();
-            SetStatus("RMS could not start recording: " + ex.Message);
+            RestoreStudioAfterRecord();
+            SetStatus("RMS can't hear a microphone. Plug one in, or choose it from the Microphone list, then press Record my voice again.");
             return;
         }
         // The engine adds the take when recording stops; this snapshot lets Ctrl+Z remove that
@@ -512,7 +832,10 @@ public sealed class SessionController : IDisposable
         finally
         {
             if (!_shuttingDown)
+            {
                 _engine.SetInputPreview(Place == StudioPlace.Setup);
+                RestoreStudioAfterRecord();
+            }
         }
     }
 
@@ -572,12 +895,22 @@ public sealed class SessionController : IDisposable
         Raise();
     }
 
+    /// <summary>Selects a lane, optionally making it the recording target.</summary>
+    public void SelectTrack(string trackId, bool arm = false)
+    {
+        if (Project?.Tracks.Any(t => t.Id == trackId) != true) return;
+        SelectedTrackId = trackId;
+        SelectedClipId = null;
+        if (arm) ArmSelectedTrack();
+        Raise();
+    }
+
     /// <summary>Makes the selected track the one that R records into.</summary>
     public void ArmSelectedTrack()
     {
         var track = SelectedTrack();
         if (Project == null || track == null || BusyRecording("Stop recording first, then switch tracks.")) return;
-        if (track.Clips.Count > 0 || track.Role == TrackRole.Backing)
+        if (!ProjectFactory.CanRecordInto(track))
         {
             // A take on a track with imported audio would replace that audio in playback.
             SetStatus($"{track.Name} is for imported audio. Use Add track to make a guitar or vocal track to record into.");
@@ -585,6 +918,7 @@ public sealed class SessionController : IDisposable
         }
         Remember();
         ArmOnly(track);
+        _engine.NotifyProjectChanged();
         SetStatus($"R now records into {track.Name}.");
         Raise();
     }
@@ -598,6 +932,12 @@ public sealed class SessionController : IDisposable
             return;
         }
         if (BusyRecording("Stop recording first, then add a track.")) return;
+        if (role is not (TrackRole.Audio or TrackRole.Vocal))
+        {
+            SetStatus("Choose a voice or instrument track for recording.");
+            return;
+        }
+        baseName = string.IsNullOrWhiteSpace(baseName) ? (role == TrackRole.Vocal ? "Voice" : "Instrument") : baseName.Trim();
         Remember();
         var name = NextTrackName(baseName);
         var track = ProjectFactory.CreateAudioTrack(Project, name, role, TrackChannelLayout.Mono);
@@ -605,6 +945,7 @@ public sealed class SessionController : IDisposable
             VocalPresets.Apply(track, VocalPresets.Clean);
         ArmOnly(track);
         SelectedTrackId = track.Id;
+        SelectedClipId = null;
         _engine.NotifyProjectChanged();
         SetStatus($"{name} track added. Press R to record into it.");
         Raise();
@@ -790,7 +1131,12 @@ public sealed class SessionController : IDisposable
         var take = result.Take;
         var track = Project?.Tracks.FirstOrDefault(t => t.Takes.Contains(take));
         if (Project == null || track == null) return;
-        var looping = Project.Loop.Enabled && Project.Loop.EndFrame > Project.Loop.StartFrame;
+        // Older studio songs start with a one-bar beat preview loop. It is not a
+        // request to replace only that bar when recording a longer performance.
+        var beatPreviewLoop = StudioSong.HasBed(Project) && !HasSelection &&
+            Project.Loop.StartFrame == 0 &&
+            Project.Loop.EndFrame == StudioSong.BarFrames(Project);
+        var looping = Project.Loop.Enabled && Project.Loop.EndFrame > Project.Loop.StartFrame && !beatPreviewLoop;
         var partial = Project.Punch.Enabled || looping;
         if (track.Takes.Count > 1 && (partial || track.Comp.Regions.Count > 0))
         {
@@ -958,7 +1304,7 @@ public sealed class SessionController : IDisposable
         SetStatus($"Exported {Path.GetFileName(dest)}. The click track and any reference track were left out.");
     }
 
-    public string? BrowseOpenProject(string title = "Open RMS project folder")
+    public string? BrowseOpenProject(string title = "Open a song")
     {
         var dlg = new OpenFolderDialog { Title = title };
         return dlg.ShowDialog() == true ? dlg.FolderName : null;
@@ -1035,6 +1381,7 @@ public sealed class SessionController : IDisposable
         _engine.AttachProject(project);
         _settings.RememberProject(project.Name, project.RootPath);
         SelectedTrackId = project.Tracks.FirstOrDefault(t => t.Armed)?.Id;
+        SelectedClipId = null;
         SetStatus("Opened " + project.Name);
         Go(StudioPlace.Arrange);
     }

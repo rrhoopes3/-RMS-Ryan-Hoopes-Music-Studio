@@ -2,6 +2,7 @@ using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using RyanMusicStudio.Core.Model;
 using RyanMusicStudio.Core.Persistence;
+using RyanMusicStudio.Core.Studio;
 using RyanMusicStudio.Core.Timeline;
 using RyanMusicStudio.Engine.Devices;
 using RyanMusicStudio.Engine.IO;
@@ -45,6 +46,7 @@ public sealed class AudioEngine : IDisposable
     private readonly float[] _monitorScratch = new float[16384 * 6 + 2];
     private readonly StreamResampler _monitorResampler = new(); // capture thread
     private readonly StreamResampler _takeResampler = new();    // writer thread
+    private RecordingWaveform? _recordingWaveform;
     private long _lastTickPlayhead;
 
     private EngineConfig _config = new();
@@ -91,6 +93,7 @@ public sealed class AudioEngine : IDisposable
     public bool IsTakeActive => _takeActive || _recording || _countIn;
     public bool HasTakeFinalizationError => _takeFinalizationError != null;
     public bool IsPlaying => _playing;
+    public bool IsSongPlaying => _playing && _outputSource is ProjectMixer;
     public bool SoftwareMonitor
     {
         get => _config.SoftwareMonitor;
@@ -106,6 +109,9 @@ public sealed class AudioEngine : IDisposable
     public EngineConfig Config => _config;
 
     public long ReportedCompensationFrames { get; private set; }
+
+    /// <summary>Project-rate waveform of the current/last take. Poll on the UI timer while recording.</summary>
+    public RecordingWaveformSnapshot? GetRecordingWaveform() => Volatile.Read(ref _recordingWaveform)?.Snapshot();
 
     public AudioEngine()
     {
@@ -131,6 +137,7 @@ public sealed class AudioEngine : IDisposable
 
     public void AttachProject(ProjectDocument project)
     {
+        Volatile.Write(ref _recordingWaveform, null);
         _project = project;
         _cache.PreloadProject(project);
         EnsureMixer(project.SampleRate);
@@ -139,6 +146,46 @@ public sealed class AudioEngine : IDisposable
     }
 
     public void NotifyProjectChanged() => RebuildMix();
+
+    public void RefreshStudioBed()
+    {
+        if (_project == null) return;
+        StudioBedWriter.Write(_project);
+        _cache.Remove(StudioSong.BedMediaId);
+        var absolute = Path.Combine(_project.RootPath, StudioSong.BedRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(absolute))
+            _cache.LoadAbsolute(StudioSong.BedMediaId, absolute);
+        RebuildMix();
+    }
+
+    /// <summary>
+    /// Plays a short hit without starting the song. Ignored while the song itself is playing.
+    /// </summary>
+    public void PreviewSamples(float[] interleaved, int sampleRate)
+    {
+        if (interleaved.Length == 0 || IsSongPlaying || _takeActive || _recording) return;
+        try
+        {
+            if (_output != null && _outputSource is not ProjectMixer)
+            {
+                try { _output.Stop(); } catch { /* replacing a finished preview */ }
+                _output.Dispose();
+                _output = null;
+                _outputSource = null;
+            }
+            OpenOutput(new CachedAudioProvider(new CachedAudio
+            {
+                Interleaved = interleaved,
+                Channels = 2,
+                SampleRate = sampleRate
+            }));
+            _output!.Play();
+        }
+        catch (Exception ex)
+        {
+            Status("RMS could not play that sound. " + ex.Message);
+        }
+    }
 
     public void SetPlayhead(long frame) => SeekInternal(frame);
 
@@ -188,6 +235,7 @@ public sealed class AudioEngine : IDisposable
             playhead = Math.Max(0, playhead);
 
         SeekInternal(playhead);
+        Volatile.Write(ref _recordingWaveform, null);
         _stopRequested = false;
         _takeActive = true;
         _countInRemaining = _project.CountInBars * bar;
@@ -320,9 +368,10 @@ public sealed class AudioEngine : IDisposable
                 _loopPassPending = true;
                 _ = RollLoopTakeAsync();
             }
-            else if (_project.Loop.Enabled && !_project.LoopRecording && wrapped)
+            else if (StudioSong.StopTakeAtLoopWrap(_project) && wrapped)
             {
-                // The backing jumped back to the loop start; one take running on would be out of time.
+                // Arrange-page loop: the backing jumped back, so one take running on would be out of time.
+                // A studio bed keeps recording; the beat is supposed to wrap under the vocal.
                 _ = StopAtLoopEndAsync();
             }
         }
@@ -432,7 +481,11 @@ public sealed class AudioEngine : IDisposable
                     : _mixer?.PlayheadFrames ?? _recordStartPlayhead;
                 _takeResampler.Reset();
                 var ring = _captureRing;
-                _writerTask = Task.Run(() => WriterLoop(ring, writer, cts.Token));
+                var waveform = new RecordingWaveform(_armedTrack.Id,
+                    project.Punch.Enabled ? project.Punch.StartFrame : Math.Max(0, _recordStartPlayhead - ReportedCompensationFrames),
+                    project.SampleRate);
+                Volatile.Write(ref _recordingWaveform, waveform);
+                _writerTask = Task.Run(() => WriterLoop(ring, writer, waveform, cts.Token));
                 _rollCapture = false;
                 _recording = true;
             }
@@ -539,7 +592,7 @@ public sealed class AudioEngine : IDisposable
         }
     }
 
-    private void WriterLoop(FloatRingBuffer ring, IncrementalWavWriter writer, CancellationToken token)
+    private void WriterLoop(FloatRingBuffer ring, IncrementalWavWriter writer, RecordingWaveform waveform, CancellationToken token)
     {
         var buf = new float[2048];
         // The ring already holds mono at the mic's rate; leave room to upsample a full read
@@ -565,6 +618,7 @@ public sealed class AudioEngine : IDisposable
             }
 
             writer.WriteInterleavedFloat(mono.AsSpan(0, frames));
+            waveform.Append(mono.AsSpan(0, frames));
         }
         writer.Flush();
     }
@@ -621,7 +675,7 @@ public sealed class AudioEngine : IDisposable
                 {
                     DeviceName = _inputDevice.FriendlyName,
                     WasInput = true,
-                    RecoveryMessage = "The microphone stopped. Recording was saved up to the last written audio. Choose the mic again on Audio Setup."
+                    RecoveryMessage = "The microphone stopped. Recording was saved up to the last written audio. Choose the mic again from the Microphone list."
                 });
             }
         };
