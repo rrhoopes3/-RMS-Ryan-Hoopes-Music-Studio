@@ -8,7 +8,7 @@
         Foreground="{StaticResource CreamBrush}"
         ResizeMode="NoResize">
     <StackPanel Margin="24">
-        <TextBlock Text="New song" FontFamily="Palatino Linotype" FontSize="24"/>
+        <TextBlock Text="New song" FontFamily="Segoe UI Semibold" FontSize="24"/>
         <TextBlock Text="Start with drum and melody pads plus an armed voice track. Add more tracks as you go." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,6,0,16"/>
         <TextBlock Text="Song name"/>
         <TextBox x:Name="NameBox" Text="My song" Margin="0,4,0,12"/>

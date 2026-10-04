@@ -39,6 +39,7 @@ public sealed class SessionController : IDisposable
     private const string NoSongMessage = "RMS does not have a song open yet.";
     private string? _heardBeforeTake; // the take the armed track played when R was pressed
     private bool _shuttingDown;
+    private bool _mixGesture;
     private Task? _testTakeTask;
 
     public event Action? Changed;
@@ -84,6 +85,7 @@ public sealed class SessionController : IDisposable
             InputPeak = m.InputPeak;
             OutputPeak = Math.Max(m.OutputPeakL, m.OutputPeakR);
             Clipping = m.ClipCount > 0 || m.InputPeak >= 0.98f;
+            TrackPeaks = m.TrackPeaks;
         };
         // The engine commits takes on a worker thread; touch the song only on the UI thread.
         _engine.TakeCommitted += result => _ui.InvokeAsync(() => OnTakeCommitted(result));
@@ -278,7 +280,7 @@ public sealed class SessionController : IDisposable
         try
         {
             var folder = Path.Combine(Path.GetTempPath(), "RMS", "test-takes");
-            SetStatus("Recording a short test. Sing a line…");
+            SetStatus("Recording a short test. Sing a lineâ€¦");
             var path = await _engine.RecordTestTakeAsync(TimeSpan.FromSeconds(4), folder);
             if (_shuttingDown || _engine.IsTakeActive) return;
             _engine.PlayFile(path);
@@ -321,11 +323,9 @@ public sealed class SessionController : IDisposable
         project.RootPath = root;
         VocalPresets.Apply(project.Tracks.First(t => t.Role == TrackRole.Vocal), VocalPresets.Clean);
         StudioBedWriter.Write(project);
-        project.Loop.Enabled = false;
         _store.Save(project);
         OpenLoaded(project);
         SetStatus($"{project.Name} is ready. Build a beat, import audio, or record on the Voice track.");
-        Go(_settings.AudioSetupConfirmed ? StudioPlace.Arrange : StudioPlace.Setup);
     }
 
     public void NewVocalSession(string name, string parentFolder, double tempo, int num, int den, int sampleRate)
@@ -346,7 +346,6 @@ public sealed class SessionController : IDisposable
         SetStatus(name == requestedName
             ? "New vocal session ready. Drag a backing track onto the timeline."
             : $"\"{requestedName}\" already exists, so this session is called \"{name}\". Drag a backing track onto the timeline.");
-        Go(_settings.AudioSetupConfirmed ? StudioPlace.Arrange : StudioPlace.Setup);
     }
 
     public bool TryOpen(string root, bool useAutosave = false)
@@ -457,7 +456,7 @@ public sealed class SessionController : IDisposable
     {
         Loading = true;
         Problem = null;
-        SetStatus("Opening your song…");
+        SetStatus("Opening your songâ€¦");
         try
         {
             _engine.MetronomeEnabled = false;
@@ -512,7 +511,7 @@ public sealed class SessionController : IDisposable
     {
         Loading = true;
         Problem = null;
-        SetStatus("Opening your song…");
+        SetStatus("Opening your songâ€¦");
         try
         {
             if (!TryOpen(root))
@@ -584,8 +583,10 @@ public sealed class SessionController : IDisposable
         if (Project == null || BusyRecording("Stop recording first, then change the tempo.")) return;
         var next = Math.Clamp(Math.Round(Project.TempoBpm + delta), 60, 180);
         if (Math.Abs(next - Project.TempoBpm) < 0.1) return;
+        Remember();
+        StudioSong.ScaleLoopForTempo(Project, Project.TempoBpm, next);
         Project.TempoBpm = next;
-        RefreshStudioBedPreservingLoop();
+        RefreshStudioBed();
         SetStatus("Tempo is " + (int)next + ".");
     }
 
@@ -604,7 +605,7 @@ public sealed class SessionController : IDisposable
     {
         if (Project == null) return;
         var on = Project.Studio.ToggleDrum(voice, step);
-        RefreshStudioBedPreservingLoop();
+        RefreshStudioBed();
         var name = voice switch
         {
             DrumVoice.Kick => "Kick",
@@ -647,7 +648,7 @@ public sealed class SessionController : IDisposable
     {
         if (Project == null) return;
         Project.Studio.SetMelody(step, MelodyPen);
-        RefreshStudioBedPreservingLoop();
+        RefreshStudioBed();
         var name = SongSketch.NoteName(Project.Studio.Melody[Math.Clamp(step, 0, SongSketch.StepCount - 1)]);
         Problem = null;
         SetStatus(string.IsNullOrEmpty(name)
@@ -684,19 +685,13 @@ public sealed class SessionController : IDisposable
     private void RestoreStudioAfterRecord()
     {
         if (Project == null || !StudioSong.HasBed(Project)) return;
-        RefreshStudioBedPreservingLoop();
+        RefreshStudioBed();
     }
 
-    private void RefreshStudioBedPreservingLoop()
+    private void RefreshStudioBed()
     {
         if (Project == null) return;
-        var loop = (Project.Loop.Enabled, Project.Loop.StartFrame, Project.Loop.EndFrame);
-        try { _engine.RefreshStudioBed(); }
-        finally
-        {
-            (Project.Loop.Enabled, Project.Loop.StartFrame, Project.Loop.EndFrame) = loop;
-            _engine.NotifyProjectChanged();
-        }
+        _engine.RefreshStudioBed();
     }
 
     private void EnsureStudioAudio()
@@ -706,12 +701,12 @@ public sealed class SessionController : IDisposable
         var referenced = StudioSong.HasBed(Project);
         if (!referenced && Project.Studio.IsEmpty) return;
         if (!referenced || !File.Exists(absolute))
-            RefreshStudioBedPreservingLoop();
+            RefreshStudioBed();
         else
         {
             StudioSong.ApplyVolume(Project, touch: false);
             if (StudioSong.NeedsFit(Project))
-                RefreshStudioBedPreservingLoop();
+                RefreshStudioBed();
             _engine.NotifyProjectChanged();
         }
     }
@@ -784,7 +779,7 @@ public sealed class SessionController : IDisposable
         }
         ArmOnly(armed);
         SelectedTrackId = armed.Id;
-        _heardBeforeTake = armed?.AuditionTakeId;
+        _heardBeforeTake = armed.AuditionTakeId;
         try
         {
             _engine.StartRecord();
@@ -793,12 +788,15 @@ public sealed class SessionController : IDisposable
         {
             Stop();
             RestoreStudioAfterRecord();
-            SetStatus("RMS can't hear a microphone. Plug one in, or choose it from the Microphone list, then press Record my voice again.");
+            SetStatus("RMS can't hear a microphone. Plug one in, or choose it from the Microphone list, then press Record again.");
             return;
         }
         // The engine adds the take when recording stops; this snapshot lets Ctrl+Z remove that
         // take (Remember() skips edits made during the take, so they undo together with it).
         _undo.RememberBeforeChange(Project);
+        var from = _engine.PlayheadFrames;
+        if (_engine.IsRecording && Project is { Punch.Enabled: false } && from > 0)
+            SetStatus($"Recording on {armed.Name} from {Clock(from)}. Press Return to start first to record from the top.");
     }
 
     public void Stop()
@@ -873,6 +871,9 @@ public sealed class SessionController : IDisposable
         Project = next;
         Project.Touch(); // the restored copy differs from the file on disk, so it still needs saving
         _engine.AttachProject(Project);
+        // studio-bed.wav on disk holds the newest pattern and tempo, not the restored one.
+        if (StudioSong.HasBed(Project))
+            RefreshStudioBed();
         _engine.SetPlayhead(playhead);
         Raise();
     }
@@ -968,18 +969,36 @@ public sealed class SessionController : IDisposable
 
     public void Tell(string message) => SetStatus(message);
 
+    public IReadOnlyDictionary<string, float> TrackPeaks { get; private set; } = new Dictionary<string, float>();
+
+    public double TrackPeak(Track track) =>
+        TrackPeaks.TryGetValue(track.Id, out var peak) ? peak : 0;
+
+    /// <summary>A fader drag is one undo step, however many values it passes through.</summary>
+    public void BeginMixGesture()
+    {
+        Remember();
+        _mixGesture = true;
+    }
+
+    public void EndMixGesture() => _mixGesture = false;
+
     public void SetTrackGain(Track track, double db)
     {
+        if (Project == null || Math.Abs(track.GainDb - db) < 1e-9) return;
+        if (!_mixGesture) Remember();
         track.GainDb = db;
-        Project?.Touch();
-        _engine.NotifyProjectChanged();
+        Project.Touch();
+        _engine.NotifyTrackLevelsChanged(track);
     }
 
     public void SetTrackPan(Track track, double pan)
     {
+        if (Project == null || Math.Abs(track.Pan - pan) < 1e-9) return;
+        if (!_mixGesture) Remember();
         track.Pan = pan;
-        Project?.Touch();
-        _engine.NotifyProjectChanged();
+        Project.Touch();
+        _engine.NotifyTrackLevelsChanged(track);
     }
 
     public void ApplyPreset(Track track, string name)
@@ -1131,12 +1150,7 @@ public sealed class SessionController : IDisposable
         var take = result.Take;
         var track = Project?.Tracks.FirstOrDefault(t => t.Takes.Contains(take));
         if (Project == null || track == null) return;
-        // Older studio songs start with a one-bar beat preview loop. It is not a
-        // request to replace only that bar when recording a longer performance.
-        var beatPreviewLoop = StudioSong.HasBed(Project) && !HasSelection &&
-            Project.Loop.StartFrame == 0 &&
-            Project.Loop.EndFrame == StudioSong.BarFrames(Project);
-        var looping = Project.Loop.Enabled && Project.Loop.EndFrame > Project.Loop.StartFrame && !beatPreviewLoop;
+        var looping = Project.Loop.Enabled && Project.Loop.EndFrame > Project.Loop.StartFrame;
         var partial = Project.Punch.Enabled || looping;
         if (track.Takes.Count > 1 && (partial || track.Comp.Regions.Count > 0))
         {
@@ -1257,16 +1271,16 @@ public sealed class SessionController : IDisposable
             return;
         }
         Project.Loop.Enabled = !Project.Loop.Enabled;
-        if (Project.Loop.Enabled && HasSelection)
-        {
-            // Loop the part the singer marked, e.g. to practise or record a tricky line over and over.
-            Project.Loop.StartFrame = Project.SelectionStartFrame;
-            Project.Loop.EndFrame = Project.SelectionEndFrame;
-        }
-        else if (Project.Loop.EndFrame <= Project.Loop.StartFrame)
-            Project.Loop.EndFrame = Math.Max(Project.SampleRate * 4, Project.LengthFrames());
         if (Project.Loop.Enabled)
-            SetStatus($"Looping {Clock(Project.Loop.StartFrame)} to {Clock(Project.Loop.EndFrame)}.");
+        {
+            (Project.Loop.StartFrame, Project.Loop.EndFrame) =
+                StudioSong.LoopRange(Project, Project.SelectionStartFrame, Project.SelectionEndFrame);
+            SetStatus(HasSelection
+                ? $"Looping {Clock(Project.Loop.StartFrame)} to {Clock(Project.Loop.EndFrame)}."
+                : $"Looping the whole song, {Clock(0)} to {Clock(Project.Loop.EndFrame)}. Drag on the ruler to loop just one part.");
+        }
+        else
+            SetStatus("Loop is off.");
         Project.Touch();
         _engine.NotifyProjectChanged();
         Raise();
@@ -1299,7 +1313,7 @@ public sealed class SessionController : IDisposable
         if (Project == null) return;
         var start = scope == ExportScope.SelectedRange ? Project.SelectionStartFrame : 0;
         var end = scope == ExportScope.SelectedRange ? Project.SelectionEndFrame : Project.LengthFrames();
-        SetStatus("Exporting " + Path.GetFileName(dest) + "…");
+        SetStatus("Exporting " + Path.GetFileName(dest) + "â€¦");
         await Task.Run(() => _exporter.Export(Project, _engine.Cache, dest, format, scope, start, end));
         SetStatus($"Exported {Path.GetFileName(dest)}. The click track and any reference track were left out.");
     }
@@ -1374,6 +1388,8 @@ public sealed class SessionController : IDisposable
     {
         if (_engine.IsPlaying)
             _engine.Stop(); // the old song's mixer must not keep playing into the new one
+        if (StudioSong.ClearBeatPreviewLoop(project))
+            project.Touch();
         Project = project;
         _undo.Clear();
         try { _store.MarkUncleanExit(project.RootPath); }
@@ -1424,7 +1440,7 @@ public sealed class SessionController : IDisposable
         MessageBox.Show(
             "This song has autosaved work that is newer than its last save. RMS may not have closed cleanly.\n\n" +
             "Restore the newer work?\n\nYes: restore it.\nNo: open the last save.",
-            "RMS — recover work?",
+            "RMS â€” recover work?",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question) == MessageBoxResult.Yes;
 

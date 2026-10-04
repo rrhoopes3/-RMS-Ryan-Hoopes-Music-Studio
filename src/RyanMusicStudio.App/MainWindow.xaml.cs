@@ -14,14 +14,17 @@ namespace RyanMusicStudio.App;
 
 public partial class MainWindow : Window
 {
-    private static readonly SolidColorBrush PadOff = Freeze(new SolidColorBrush(Color.FromRgb(247, 251, 252)));
-    private static readonly SolidColorBrush PadOn = Freeze(new SolidColorBrush(Color.FromRgb(14, 124, 102)));
-    private static readonly SolidColorBrush Ink = Freeze(new SolidColorBrush(Color.FromRgb(26, 36, 40)));
-    private static readonly SolidColorBrush Paper = Freeze(new SolidColorBrush(Color.FromRgb(247, 251, 252)));
-    private static readonly SolidColorBrush Line = Freeze(new SolidColorBrush(Color.FromRgb(197, 208, 214)));
-    private static readonly SolidColorBrush LampOn = Freeze(new SolidColorBrush(Color.FromRgb(242, 183, 5)));
-    private static readonly SolidColorBrush LampOff = Freeze(new SolidColorBrush(Color.FromRgb(216, 224, 228)));
-    private static readonly SolidColorBrush Recording = Freeze(new SolidColorBrush(Color.FromRgb(176, 48, 48)));
+    // Graphite palette (see App.xaml; the "Copper" brushes there are now the green accent): pads are dark until tapped.
+    private static readonly SolidColorBrush PadOff = Freeze(new SolidColorBrush(Color.FromRgb(38, 42, 49)));
+    private static readonly SolidColorBrush PadOn = Freeze(new SolidColorBrush(Color.FromRgb(31, 145, 80)));
+    private static readonly SolidColorBrush Ink = Freeze(new SolidColorBrush(Color.FromRgb(232, 236, 241)));
+    private static readonly SolidColorBrush Paper = Freeze(new SolidColorBrush(Color.FromRgb(18, 20, 23)));
+    private static readonly SolidColorBrush Line = Freeze(new SolidColorBrush(Color.FromRgb(58, 64, 74)));
+    private static readonly SolidColorBrush Muted = Freeze(new SolidColorBrush(Color.FromRgb(154, 163, 174)));
+    private static readonly SolidColorBrush LampOn = Freeze(new SolidColorBrush(Color.FromRgb(230, 184, 77)));
+    private static readonly SolidColorBrush LampOff = Freeze(new SolidColorBrush(Color.FromRgb(42, 47, 55)));
+    private static readonly SolidColorBrush Recording = Freeze(new SolidColorBrush(Color.FromRgb(229, 72, 77)));
+    private static readonly SolidColorBrush RecordIdle = Freeze(new SolidColorBrush(Color.FromRgb(58, 30, 33)));
 
     private readonly SessionController _session = new();
     private readonly Button[,] _drums = new Button[3, SongSketch.StepCount];
@@ -53,6 +56,9 @@ public partial class MainWindow : Window
         Mixer.SetTrackGain = _session.SetTrackGain;
         Mixer.SetTrackPan = _session.SetTrackPan;
         Mixer.ApplyPreset = _session.ApplyPreset;
+        Mixer.BeginMixGesture = _session.BeginMixGesture;
+        Mixer.EndMixGesture = _session.EndMixGesture;
+        Mixer.ReadTrackLevel = _session.TrackPeak;
         _session.Changed += QueueRefresh;
         _session.Banner += msg => Dispatcher.InvokeAsync(() =>
             MessageBox.Show(msg, "RMS", MessageBoxButton.OK, MessageBoxImage.Information));
@@ -140,8 +146,8 @@ public partial class MainWindow : Window
         {
             Text = "Notes",
             VerticalAlignment = VerticalAlignment.Center,
-            FontSize = 16,
-            Foreground = new SolidColorBrush(Color.FromRgb(92, 107, 114))
+            FontSize = 14,
+            Foreground = Muted
         };
         Grid.SetColumn(melodyLabel, 0);
         MelodyGrid.Children.Add(melodyLabel);
@@ -172,7 +178,8 @@ public partial class MainWindow : Window
         {
             Text = text,
             VerticalAlignment = VerticalAlignment.Center,
-            FontSize = 18
+            FontSize = 14,
+            Foreground = Muted
         };
         Grid.SetRow(label, row);
         Grid.SetColumn(label, 0);
@@ -202,7 +209,8 @@ public partial class MainWindow : Window
         var clock = project == null
             ? "00:00.000"
             : TimelineMath.FormatClock(_session.Engine.PlayheadFrames, project.SampleRate);
-        PositionText.Text = "Step " + step + " of 16    " + clock;
+        ClockText.Text = clock;
+        StepRun.Text = "Step " + step + " / 16";
 
         if (project != null && (int)VolumeSlider.Value != project.Studio.VolumePercent)
             VolumeSlider.Value = project.Studio.VolumePercent;
@@ -228,8 +236,7 @@ public partial class MainWindow : Window
         OpenButton.IsEnabled = !busy;
         VolumeSlider.IsEnabled = enabled;
 
-        RecordButton.Background = _session.Engine.IsRecording ? Recording : Paper;
-        RecordButton.Foreground = _session.Engine.IsRecording ? Paper : Ink;
+        RecordButton.Background = _session.Engine.IsRecording ? Recording : RecordIdle;
 
         var activeTake = _session.Engine.IsTakeActive;
         InputMeter.Level = _session.InputPeak;
@@ -238,10 +245,14 @@ public partial class MainWindow : Window
         OutputMeter.IsClipping = _session.OutputPeak >= 0.99f;
         RecordingState.Text = _session.Engine.IsCountingIn ? "Count-in · get ready"
             : _session.Engine.IsRecording ? "● Recording" : activeTake ? "Saving take…" : "";
-        RecordingState.Foreground = Recording;
+        RecordingState.Foreground = _session.Engine.IsCountingIn ? LampOn : Recording;
         var armed = project?.Tracks.FirstOrDefault(t => t.Armed);
-        ArmedText.Text = armed == null ? "No track armed" : "Armed: " + armed.Name;
-        RecordButton.Content = activeTake ? "Stop recording" : "Record";
+        ArmedRun.Text = armed == null ? "No track armed" : "● " + armed.Name + " armed";
+        ArmedRun.Foreground = armed == null ? Muted : Recording;
+        RecDot.Visibility = activeTake ? Visibility.Collapsed : Visibility.Visible;
+        RecSquare.Visibility = activeTake ? Visibility.Visible : Visibility.Collapsed;
+        RecordButton.ToolTip = activeTake ? "Stop recording (R)" : "Record onto the armed track (R)";
+        AutomationProperties.SetName(RecordButton, activeTake ? "Stop recording" : "Record armed track");
         RecordButton.IsEnabled = enabled && (armed != null || activeTake);
         MicBox.IsEnabled = SpeakerBox.IsEnabled = !busy && !activeTake;
         NewButton.IsEnabled = OpenButton.IsEnabled = !busy && !activeTake;
@@ -253,9 +264,15 @@ public partial class MainWindow : Window
         Timeline.IsEnabled = enabled && !activeTake;
         UndoButton.IsEnabled = _session.CanUndo;
         RedoButton.IsEnabled = _session.CanRedo;
-        LoopButton.Content = project?.Loop.Enabled == true ? "Loop on" : "Loop off";
-        PunchButton.Content = project?.Punch.Enabled == true ? "Punch on" : "Punch off";
-        CompButton.Content = _session.CompMode ? "Choose takes: on" : "Choose takes";
+        // Switches light up copper when on (SwitchButton style); the label stays put.
+        LoopButton.Tag = project?.Loop.Enabled == true ? "on" : null;
+        PunchButton.Tag = project?.Punch.Enabled == true ? "on" : null;
+        CompButton.Tag = _session.CompMode ? "on" : null;
+        ClickButton.Tag = _session.Engine.MetronomeEnabled ? "on" : null;
+        AutomationProperties.SetItemStatus(LoopButton, LoopButton.Tag == null ? "off" : "on");
+        AutomationProperties.SetItemStatus(PunchButton, PunchButton.Tag == null ? "off" : "on");
+        AutomationProperties.SetItemStatus(CompButton, CompButton.Tag == null ? "off" : "on");
+        AutomationProperties.SetItemStatus(ClickButton, ClickButton.Tag == null ? "off" : "on");
         Timeline.Project = project;
         Timeline.SelectedClipId = _session.SelectedClipId;
         Timeline.SelectedTrackId = _session.SelectedTrackId;
@@ -266,6 +283,8 @@ public partial class MainWindow : Window
         Timeline.InvalidateProject();
         Mixer.SetProject(project, _session.SelectedTrackId);
         var playing = _session.Engine.IsSongPlaying;
+        PlayIcon.Visibility = playing ? Visibility.Collapsed : Visibility.Visible;
+        PauseIcon.Visibility = playing ? Visibility.Visible : Visibility.Collapsed;
         for (var i = 0; i < SongSketch.StepCount; i++)
             _lamps[i].Background = project != null && playing && i == _session.CurrentStep ? LampOn : LampOff;
 
@@ -279,7 +298,7 @@ public partial class MainWindow : Window
                 button.IsEnabled = enabled;
                 var on = onRow != null && s < onRow.Count && onRow[s];
                 button.Background = on ? PadOn : PadOff;
-                button.Foreground = on ? Paper : Ink;
+                button.Foreground = Ink;
                 button.BorderBrush = s == _session.CurrentStep && playing ? LampOn : Line;
                 button.BorderThickness = s == _session.CurrentStep && playing ? new Thickness(3) : new Thickness(1);
             }
@@ -290,7 +309,7 @@ public partial class MainWindow : Window
             var selected = i == _session.MelodyPen;
             _keys[i].IsEnabled = enabled;
             _keys[i].Background = selected ? PadOn : Paper;
-            _keys[i].Foreground = selected ? Paper : Ink;
+            _keys[i].Foreground = Ink;
             _keys[i].BorderBrush = selected ? PadOn : Line;
         }
 
@@ -302,7 +321,7 @@ public partial class MainWindow : Window
             button.Content = SongSketch.NoteName(degree);
             var on = degree >= 0;
             button.Background = on ? PadOn : PadOff;
-            button.Foreground = on ? Paper : Ink;
+            button.Foreground = Ink;
             button.BorderBrush = s == _session.CurrentStep && playing ? LampOn : Line;
             button.BorderThickness = s == _session.CurrentStep && playing ? new Thickness(3) : new Thickness(1);
         }
@@ -469,10 +488,7 @@ public partial class MainWindow : Window
         if (e.OriginalSource is TextBox || e.OriginalSource is System.Windows.Controls.Primitives.TextBoxBase) return;
         if (e.Key == Key.Space && e.OriginalSource is not ComboBox && e.OriginalSource is not ComboBoxItem && e.OriginalSource is not Button)
         {
-            if (_session.Engine.IsSongPlaying || _session.Engine.IsTakeActive)
-                _session.StopSong();
-            else
-                _session.PlayPause();
+            _session.PlayPause();
             e.Handled = true;
         }
         else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Z)

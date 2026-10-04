@@ -51,14 +51,14 @@ public sealed class MeterBar : FrameworkElement
         var w = ActualWidth;
         var h = ActualHeight;
         if (w <= 1 || h <= 1) return;
-        dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(34, 26, 21)), null, new Rect(0, 0, w, h));
+        dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(23, 26, 30)), null, new Rect(0, 0, w, h));
 
         var level = Fraction(Level);
         var amberAt = Fraction(Math.Pow(10, AmberDb / 20));
         var redAt = Fraction(Math.Pow(10, RedDb / 20));
-        var sage = Color.FromRgb(126, 139, 106);
+        var sage = Color.FromRgb(63, 185, 122);
         var amber = Color.FromRgb(230, 184, 77);
-        var red = Color.FromRgb(196, 60, 60);
+        var red = Color.FromRgb(229, 72, 77);
         if (IsClipping)
         {
             dc.DrawRectangle(new SolidColorBrush(red), null, new Rect(0, 0, level * w, h));
@@ -81,16 +81,16 @@ public sealed class MeterBar : FrameworkElement
         if (_holdFraction > 0.01)
         {
             var hx = Math.Min(w - 1, _holdFraction * w);
-            dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(243, 230, 212)), null, new Rect(hx, 0, 2, h));
+            dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(232, 236, 241)), null, new Rect(hx, 0, 2, h));
         }
 
         // Brass ticks at -24, -12, -6 and -3 dBFS.
-        var tick = new SolidColorBrush(Color.FromArgb(150, 224, 166, 106));
+        var tick = new SolidColorBrush(Color.FromArgb(150, 61, 187, 111));
         foreach (var db in new[] { -24.0, AmberDb, -6.0, RedDb })
         {
             var x = Fraction(Math.Pow(10, db / 20)) * w;
             dc.DrawRectangle(tick, null, new Rect(x, h - Math.Min(5, h / 2), 1, Math.Min(5, h / 2)));
         }
-        dc.DrawRectangle(null, new Pen(new SolidColorBrush(Color.FromRgb(63, 50, 40)), 1), new Rect(0.5, 0.5, w - 1, h - 1));
+        dc.DrawRectangle(null, new Pen(new SolidColorBrush(Color.FromRgb(42, 47, 55)), 1), new Rect(0.5, 0.5, w - 1, h - 1));
     }
 }

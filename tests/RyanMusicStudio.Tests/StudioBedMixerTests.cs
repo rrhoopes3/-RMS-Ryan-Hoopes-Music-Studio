@@ -79,6 +79,69 @@ public sealed class StudioBedMixerTests
         }
     }
 
+    [Fact]
+    public void A_take_longer_than_one_bar_plays_through_on_a_fresh_studio_song()
+    {
+        var bedPath = Path.Combine(Path.GetTempPath(), "rms-bed-long-" + Guid.NewGuid().ToString("N") + ".wav");
+        var takePath = Path.Combine(Path.GetTempPath(), "rms-take-long-" + Guid.NewGuid().ToString("N") + ".wav");
+        try
+        {
+            using (var writer = new WaveFileWriter(bedPath, WaveFormat.CreateIeeeFloatWaveFormat(48000, 1)))
+                writer.WriteSamples(new[] { .1f, .1f, .1f, .1f }, 0, 4);
+            using (var writer = new WaveFileWriter(takePath, WaveFormat.CreateIeeeFloatWaveFormat(48000, 1)))
+                writer.WriteSamples(Enumerable.Repeat(.5f, 20).ToArray(), 0, 20);
+
+            var project = ProjectFactory.CreateStudioSong("First run",
+                Path.Combine(Path.GetTempPath(), "rms-first-" + Guid.NewGuid().ToString("N")), 100, 48000);
+            StudioSong.Place(project, 4);
+            var take = new Take { StartFrame = 0, LengthFrames = 20 };
+            project.Tracks.Single(t => t.Role == TrackRole.Vocal).Takes.Add(take);
+            StudioSong.Place(project, 4); // what the bed refresh after a take does
+            foreach (var t in project.Tracks)
+                t.Effects.Clear();
+            project.Master.GainDb = 0;
+            project.Master.LimiterEnabled = false;
+            Assert.False(project.Loop.Enabled);
+
+            var cache = new SampleCache();
+            cache.LoadAbsolute(StudioSong.BedMediaId, bedPath);
+            cache.LoadAbsolute(take.Id, takePath);
+            var mixer = new ProjectMixer(48000);
+            mixer.SetSnapshot(ProjectMixer.Build(project, cache, false, false, 0));
+            var output = new float[32];
+            mixer.Read(output, 0, output.Length);
+
+            Assert.Equal(16, mixer.PlayheadFrames);
+            // Centered, the bed alone is about .07 and bed plus vocal about .42.
+            for (var frame = 0; frame < 16; frame++)
+                Assert.True(output[frame * 2] > .3f, $"frame {frame} lost the vocal");
+        }
+        finally
+        {
+            File.Delete(bedPath);
+            File.Delete(takePath);
+        }
+    }
+
+    [Fact]
+    public void Each_track_reports_its_own_peak_and_faders_change_without_a_rebuild()
+    {
+        var mixer = CreateMixer(export: false);
+        var output = new float[24];
+        mixer.Read(output, 0, output.Length);
+        var meters = mixer.SampleMeters();
+        Assert.Equal(.4f, meters.TrackPeaks["Beat"], 5);
+        Assert.Equal(.5f, meters.TrackPeaks["Vocal"], 5);
+        Assert.Equal(0f, mixer.SampleMeters().TrackPeaks["Vocal"]); // reading resets the peak
+
+        Assert.True(mixer.SetTrackLevels("Vocal", .5f, -1));
+        Assert.False(mixer.SetTrackLevels("missing", 1, 0));
+        mixer.SetPlayhead(0);
+        mixer.Read(output, 0, output.Length);
+        Assert.Equal(.3f + .25f, output[6 * 2], 5); // bed step plus the vocal at half gain
+        Assert.Equal(.25f, mixer.SampleMeters().TrackPeaks["Vocal"], 5);
+    }
+
     private static ProjectMixer CreateMixer(bool export, LoopRegion? loop = null)
     {
         var bed = new CachedAudio { Interleaved = new[] { .1f, .2f, .3f, .4f }, Channels = 1, SampleRate = 48000 };
@@ -107,7 +170,7 @@ public sealed class StudioBedMixerTests
 
     private static TrackMix Track(string name, CachedAudio? bed, BoundSpan[] spans) => new()
     {
-        Name = name, Role = TrackRole.Backing, GainLin = 1, Pan = -1, Mute = false, Solo = false,
+        Id = name, Name = name, Role = TrackRole.Backing, GainLin = 1, Pan = -1, Mute = false, Solo = false,
         Effects = new EffectChainProcessor(), Spans = spans, StudioBed = bed
     };
 }

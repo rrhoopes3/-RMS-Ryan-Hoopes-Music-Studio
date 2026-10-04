@@ -1,5 +1,6 @@
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using RyanMusicStudio.Core.Dsp;
 using RyanMusicStudio.Core.Model;
 using RyanMusicStudio.Core.Persistence;
 using RyanMusicStudio.Core.Studio;
@@ -146,6 +147,13 @@ public sealed class AudioEngine : IDisposable
     }
 
     public void NotifyProjectChanged() => RebuildMix();
+
+    /// <summary>Applies a fader or pan move without rebuilding the mix.</summary>
+    public void NotifyTrackLevelsChanged(Track track)
+    {
+        if (_mixer == null || !_mixer.SetTrackLevels(track.Id, AudioMath.DbToLin(track.GainDb), (float)track.Pan))
+            RebuildMix();
+    }
 
     public void RefreshStudioBed()
     {
@@ -370,8 +378,6 @@ public sealed class AudioEngine : IDisposable
             }
             else if (StudioSong.StopTakeAtLoopWrap(_project) && wrapped)
             {
-                // Arrange-page loop: the backing jumped back, so one take running on would be out of time.
-                // A studio bed keeps recording; the beat is supposed to wrap under the vocal.
                 _ = StopAtLoopEndAsync();
             }
         }
@@ -411,7 +417,7 @@ public sealed class AudioEngine : IDisposable
         try
         {
             if (await StopRecordAsync().ConfigureAwait(false) != null)
-                Status("Take saved at the end of the loop. Tick Loop recording to record pass after pass.");
+                Status("Take saved at the end of the loop. Turn Loop off to record past it.");
         }
         catch (Exception ex)
         {

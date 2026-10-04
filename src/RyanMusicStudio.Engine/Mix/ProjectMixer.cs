@@ -17,10 +17,14 @@ public sealed class BoundSpan
 
 public sealed class TrackMix
 {
+    public string Id { get; init; } = "";
     public required string Name { get; init; }
     public required TrackRole Role { get; init; }
-    public required float GainLin { get; init; }
-    public required float Pan { get; init; }
+    /// <summary>Settable so a fader drag doesn't rebuild the effect chains (and cut reverb tails).</summary>
+    public required float GainLin { get; set; }
+    public required float Pan { get; set; }
+    /// <summary>Highest post-fader level since the UI last read it.</summary>
+    public float Peak;
     public required bool Mute { get; init; }
     public required bool Solo { get; init; }
     public required EffectChainProcessor Effects { get; init; }
@@ -48,6 +52,7 @@ public sealed class MeterState
     public float OutputPeakL;
     public float OutputPeakR;
     public int ClipCount;
+    public IReadOnlyDictionary<string, float> TrackPeaks = new Dictionary<string, float>();
 }
 
 public sealed class ProjectMixer : ISampleProvider
@@ -87,13 +92,34 @@ public sealed class ProjectMixer : ISampleProvider
 
     public MeterState SampleMeters()
     {
+        MixSnapshot? snap;
+        lock (_snapGate) snap = _snapshot;
+        var trackPeaks = new Dictionary<string, float>();
+        if (snap != null)
+        {
+            foreach (var track in snap.Tracks)
+                trackPeaks[track.Id] = Interlocked.Exchange(ref track.Peak, 0);
+        }
         return new MeterState
         {
             InputPeak = Interlocked.Exchange(ref _meters.InputPeak, 0),
             OutputPeakL = Interlocked.Exchange(ref _meters.OutputPeakL, 0),
             OutputPeakR = Interlocked.Exchange(ref _meters.OutputPeakR, 0),
-            ClipCount = Interlocked.Exchange(ref _meters.ClipCount, 0)
+            ClipCount = Interlocked.Exchange(ref _meters.ClipCount, 0),
+            TrackPeaks = trackPeaks
         };
+    }
+
+    /// <summary>Changes one track's fader and pan in the live mix, keeping its effect state.</summary>
+    public bool SetTrackLevels(string trackId, float gainLin, float pan)
+    {
+        MixSnapshot? snap;
+        lock (_snapGate) snap = _snapshot;
+        var track = snap?.Tracks.FirstOrDefault(t => t.Id == trackId);
+        if (track == null) return false;
+        track.GainLin = gainLin;
+        track.Pan = pan;
+        return true;
     }
 
     public void NotifyInputPeak(float level, bool clipped)
@@ -137,7 +163,8 @@ public sealed class ProjectMixer : ISampleProvider
                 Array.Clear(_trackScratch, 0, frames * 2);
                 RenderTrack(track, playhead, frames, snap.Loop, loopEnabled);
                 track.Effects.Process(_trackScratch.AsSpan(0, frames * 2), frames, 2);
-                MixToMaster(_trackScratch, frames, track.GainLin, track.Pan);
+                var trackPeak = MixToMaster(_trackScratch, frames, track.GainLin, track.Pan);
+                if (trackPeak > track.Peak) Interlocked.Exchange(ref track.Peak, trackPeak);
             }
 
             if (!ExportMode && snap.Metronome)
@@ -194,6 +221,7 @@ public sealed class ProjectMixer : ISampleProvider
             effects.Rebuild(track.Effects, project.SampleRate);
             tracks.Add(new TrackMix
             {
+                Id = track.Id,
                 Name = track.Name,
                 Role = track.Role,
                 GainLin = AudioMath.DbToLin(track.GainDb),
@@ -302,16 +330,22 @@ public sealed class ProjectMixer : ISampleProvider
         }
     }
 
-    private void MixToMaster(float[] track, int frames, float gain, float pan)
+    /// <summary>Returns the post-fader, pre-pan peak.</summary>
+    private float MixToMaster(float[] track, int frames, float gain, float pan)
     {
         var t = (Math.Clamp(pan, -1f, 1f) + 1f) * 0.5f;
         var leftG = gain * MathF.Cos(t * MathF.PI * 0.5f);
         var rightG = gain * MathF.Sin(t * MathF.PI * 0.5f);
+        var peak = 0f;
         for (var i = 0; i < frames; i++)
         {
-            _masterScratch[i * 2] += track[i * 2] * leftG;
-            _masterScratch[i * 2 + 1] += track[i * 2 + 1] * rightG;
+            var l = track[i * 2];
+            var r = track[i * 2 + 1];
+            _masterScratch[i * 2] += l * leftG;
+            _masterScratch[i * 2 + 1] += r * rightG;
+            peak = Math.Max(peak, Math.Max(Math.Abs(l), Math.Abs(r)));
         }
+        return peak * gain;
     }
 
     private void MixMetronome(long playhead, int frames, MixSnapshot snap, bool loopEnabled)

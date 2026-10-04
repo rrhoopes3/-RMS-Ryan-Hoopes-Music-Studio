@@ -91,14 +91,14 @@ public class StudioSoundTests
     }
 
     [Fact]
-    public void A_long_vocal_tiles_the_beat_and_opens_the_loop()
+    public void A_long_vocal_tiles_the_beat_without_a_transport_loop()
     {
         var project = ProjectFactory.CreateStudioSong("Long",
             Path.Combine(Path.GetTempPath(), "rms-long-" + Guid.NewGuid().ToString("N")), 100, 48000);
         var bar = StudioSong.BarFrames(48000, 100);
         StudioSong.Place(project, bar);
+        Assert.False(project.Loop.Enabled);
         Assert.False(StudioSong.StopTakeAtLoopWrap(project));
-        Assert.Equal(bar, project.Loop.EndFrame);
         Assert.Single(StudioSong.FindOrCreateBeatTrack(project).Clips, StudioSong.IsBedClip);
 
         project.Tracks.Single(t => t.Role == TrackRole.Vocal).Takes.Add(new Take
@@ -111,7 +111,7 @@ public class StudioSoundTests
         var beds = StudioSong.FindOrCreateBeatTrack(project).Clips
             .Where(StudioSong.IsBedClip).OrderBy(c => c.StartFrame).ToList();
         Assert.Equal(4, beds.Count);
-        Assert.Equal(bar * 4, project.Loop.EndFrame);
+        Assert.False(project.Loop.Enabled);
         Assert.Equal(0, beds[0].StartFrame);
         Assert.Equal(bar * 3, beds[3].StartFrame);
         Assert.False(StudioSong.NeedsFit(project));
@@ -132,18 +132,26 @@ public class StudioSoundTests
         project.Media.Single(m => m.Id == StudioSong.BedMediaId).LengthFrames++;
         Assert.False(StudioSong.NeedsFit(project));
 
-        StudioSong.ArmBeatLoop(project);
-        Assert.Equal(bar, project.Loop.EndFrame);
-        Assert.False(StudioSong.StopTakeAtLoopWrap(project));
+        // Re-placing the beat leaves the singer's own loop alone.
+        StudioSong.Place(project, bar);
+        Assert.True(project.Loop.Enabled);
+        Assert.Equal(bar, project.Loop.StartFrame);
+        Assert.Equal(bar * 2, project.Loop.EndFrame);
     }
 
     [Fact]
-    public void Studio_loop_does_not_stop_a_take_the_way_an_old_arrange_loop_does()
+    public void Only_a_loop_the_singer_turned_on_stops_a_take()
     {
         var studio = ProjectFactory.CreateStudioSong("S",
             Path.Combine(Path.GetTempPath(), "rms-s-" + Guid.NewGuid().ToString("N")), 100);
         StudioSong.Place(studio, 1000);
         Assert.True(StudioSong.HasBed(studio));
+        Assert.False(StudioSong.StopTakeAtLoopWrap(studio));
+        studio.Loop.Enabled = true;
+        studio.Loop.StartFrame = 0;
+        studio.Loop.EndFrame = 4000;
+        Assert.True(StudioSong.StopTakeAtLoopWrap(studio));
+        studio.LoopRecording = true;
         Assert.False(StudioSong.StopTakeAtLoopWrap(studio));
 
         var old = ProjectFactory.CreateVocalOverBeat("Old",
@@ -152,6 +160,69 @@ public class StudioSoundTests
         old.Loop.EndFrame = 8000;
         Assert.False(StudioSong.HasBed(old));
         Assert.True(StudioSong.StopTakeAtLoopWrap(old));
+    }
+
+    [Fact]
+    public void An_old_one_bar_beat_preview_loop_is_cleared_but_a_real_loop_is_kept()
+    {
+        var project = ProjectFactory.CreateStudioSong("Legacy",
+            Path.Combine(Path.GetTempPath(), "rms-legacy-" + Guid.NewGuid().ToString("N")), 100, 48000);
+        var bar = StudioSong.BarFrames(project);
+        StudioSong.Place(project, bar);
+        project.Loop.Enabled = true;
+        project.Loop.StartFrame = 0;
+        project.Loop.EndFrame = bar;
+        Assert.True(StudioSong.IsBeatPreviewLoop(project));
+        Assert.True(StudioSong.ClearBeatPreviewLoop(project));
+        Assert.False(project.Loop.Enabled);
+        Assert.False(StudioSong.ClearBeatPreviewLoop(project));
+
+        project.Loop.Enabled = true;
+        project.Loop.EndFrame = bar * 2;
+        Assert.False(StudioSong.ClearBeatPreviewLoop(project));
+        Assert.True(project.Loop.Enabled);
+
+        var old = ProjectFactory.CreateVocalOverBeat("Old",
+            Path.Combine(Path.GetTempPath(), "rms-o2-" + Guid.NewGuid().ToString("N")), 100, 4, 4, 48000);
+        old.Loop.Enabled = true;
+        old.Loop.StartFrame = 0;
+        old.Loop.EndFrame = StudioSong.BarFrames(old);
+        Assert.False(StudioSong.ClearBeatPreviewLoop(old));
+    }
+
+    [Fact]
+    public void Loop_on_without_a_marked_range_loops_the_whole_song_not_one_bar()
+    {
+        var project = ProjectFactory.CreateStudioSong("Whole",
+            Path.Combine(Path.GetTempPath(), "rms-whole-" + Guid.NewGuid().ToString("N")), 100, 48000);
+        var bar = StudioSong.BarFrames(project);
+        StudioSong.Place(project, bar);
+        Assert.Equal((0L, bar), StudioSong.LoopRange(project, 0, 0));
+
+        project.Tracks.Single(t => t.Role == TrackRole.Vocal).Takes.Add(new Take { StartFrame = 0, LengthFrames = bar * 5 + 7 });
+        StudioSong.Place(project, bar);
+        var (start, end) = StudioSong.LoopRange(project, 0, 0);
+        Assert.Equal(0, start);
+        Assert.True(end >= bar * 5 + 7);
+
+        Assert.Equal((100L, 900L), StudioSong.LoopRange(project, 100, 900));
+    }
+
+    [Fact]
+    public void A_tempo_change_keeps_the_loop_on_the_same_beats()
+    {
+        var project = ProjectFactory.CreateStudioSong("Tempo",
+            Path.Combine(Path.GetTempPath(), "rms-tempo-" + Guid.NewGuid().ToString("N")), 100, 48000);
+        var oldBar = StudioSong.BarFrames(project);
+        project.Loop.Enabled = true;
+        project.Loop.StartFrame = oldBar;
+        project.Loop.EndFrame = oldBar * 3;
+
+        StudioSong.ScaleLoopForTempo(project, 100, 120);
+        project.TempoBpm = 120;
+        var newBar = StudioSong.BarFrames(project);
+        Assert.InRange(project.Loop.StartFrame, newBar - 2, newBar + 2);
+        Assert.InRange(project.Loop.EndFrame, newBar * 3 - 2, newBar * 3 + 2);
     }
 
     [Fact]
@@ -206,8 +277,7 @@ public class StudioSoundTests
         Assert.Equal(4, opened.Studio.Melody[0]);
         Assert.Equal(-1, opened.Studio.Melody[1]);
         Assert.Equal(StudioSong.BedMediaId, opened.Media.Single().Id);
-        Assert.True(opened.Loop.Enabled);
-        Assert.Equal(audio.Length / 2, opened.Loop.EndFrame);
+        Assert.False(opened.Loop.Enabled);
         Assert.Equal("Voice", opened.Tracks.Single(t => t.Role == TrackRole.Vocal).Name);
         Directory.Delete(root, true);
     }

@@ -23,7 +23,7 @@ public class RecordingTrackWorkflowTests
         var project = ProjectFactory.CreateStudioSong("Waltz", Path.GetTempPath(), 120);
         project.TimeSignature = new TimeSignature { Numerator = 3, Denominator = 4 };
         StudioSong.Place(project, StudioSong.BarFrames(project));
-        Assert.Equal(72000, project.Loop.EndFrame);
+        Assert.Equal(72000, project.Media.Single(m => m.Id == StudioSong.BedMediaId).LengthFrames);
         Assert.False(StudioSong.NeedsFit(project));
     }
 

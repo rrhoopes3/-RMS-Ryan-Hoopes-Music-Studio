@@ -5,7 +5,7 @@ namespace RyanMusicStudio.Core.Studio;
 
 /// <summary>
 /// Puts the rendered beat on its own backing track and tiles it under vocals.
-/// Play can loop the pattern; a take is allowed to run longer than one bar.
+/// Live playback repeats the beat by itself, so the transport loop stays a user choice.
 /// </summary>
 public static class StudioSong
 {
@@ -36,11 +36,43 @@ public static class StudioSong
         project.Media.Any(m => m.Id == BedMediaId);
 
     /// <summary>
-    /// The one-bar studio loop is only for hearing the beat. A vocal take must
-    /// keep going when that loop wraps, unlike an arrange-page loop in 1.1.0.
+    /// A take running past a transport loop would be out of time with the backing that jumped back.
     /// </summary>
     public static bool StopTakeAtLoopWrap(ProjectDocument project) =>
-        project.Loop.Enabled && !project.LoopRecording && !HasBed(project);
+        project.Loop.Enabled && !project.LoopRecording && project.Loop.EndFrame > project.Loop.StartFrame;
+
+    /// <summary>
+    /// Earlier studio builds switched on a one-bar transport loop just to repeat the beat.
+    /// That loop cuts a longer vocal off on playback.
+    /// </summary>
+    public static bool IsBeatPreviewLoop(ProjectDocument project) =>
+        HasBed(project) && project.Loop.Enabled &&
+        project.Loop.StartFrame == 0 && project.Loop.EndFrame == BarFrames(project);
+
+    public static bool ClearBeatPreviewLoop(ProjectDocument project)
+    {
+        if (!IsBeatPreviewLoop(project)) return false;
+        project.Loop.Enabled = false;
+        return true;
+    }
+
+    /// <summary>The range Loop on should use: the marked range, otherwise the whole song.</summary>
+    public static (long Start, long End) LoopRange(ProjectDocument project, long selectionStart, long selectionEnd)
+    {
+        if (selectionEnd > selectionStart)
+            return (Math.Max(0, selectionStart), selectionEnd);
+        return (0, Math.Max(BarFrames(project), project.LengthFrames()));
+    }
+
+    /// <summary>Keeps a loop on the same beats of the pattern when the tempo changes.</summary>
+    public static void ScaleLoopForTempo(ProjectDocument project, double oldTempo, double newTempo)
+    {
+        if (!double.IsFinite(oldTempo) || !double.IsFinite(newTempo) || oldTempo <= 0 || newTempo <= 0) return;
+        if (project.Loop.EndFrame <= project.Loop.StartFrame) return;
+        var ratio = oldTempo / newTempo;
+        project.Loop.StartFrame = (long)Math.Round(project.Loop.StartFrame * ratio);
+        project.Loop.EndFrame = Math.Max(project.Loop.StartFrame + 1, (long)Math.Round(project.Loop.EndFrame * ratio));
+    }
 
     public static bool LooksEmpty(ProjectDocument project)
     {
@@ -55,10 +87,6 @@ public static class StudioSong
         ApplyVolume(project, touch: false);
 
         var cover = CoverFrames(project, barFrames);
-        project.Loop.Enabled = true;
-        project.Loop.StartFrame = 0;
-        project.Loop.EndFrame = cover <= barFrames ? barFrames : cover;
-
         var beat = FindOrCreateBeatTrack(project);
         var media = project.Media.FirstOrDefault(m => m.Id == BedMediaId);
         if (media == null)
@@ -117,14 +145,6 @@ public static class StudioSong
                 return true;
         }
         return false;
-    }
-
-    public static void ArmBeatLoop(ProjectDocument project)
-    {
-        var bar = BarFrames(project);
-        project.Loop.Enabled = true;
-        project.Loop.StartFrame = 0;
-        project.Loop.EndFrame = bar;
     }
 
     public static void ApplyVolume(ProjectDocument project) => ApplyVolume(project, touch: true);

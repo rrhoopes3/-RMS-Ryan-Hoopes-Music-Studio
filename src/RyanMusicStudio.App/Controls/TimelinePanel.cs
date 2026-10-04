@@ -12,7 +12,19 @@ namespace RyanMusicStudio.App.Controls;
 public sealed class TimelinePanel : FrameworkElement
 {
     private const double Header = 28.0;
-    private const double TrackLabel = 22.0;
+    private const double TrackLabel = 24.0;
+    private const double MinLane = 38.0;
+    // Lanes stop growing here so two takes don't each fill half the screen.
+    private const double MaxLane = 120.0;
+    // A track with nothing on it yet collapses to a short drop-zone strip.
+    private const double EmptyTrack = 76.0;
+
+    private static readonly Typeface Ui = new("Segoe UI");
+    private static readonly Typeface UiBold = new(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
+    private static readonly Brush Cream = Frozen(Color.FromRgb(232, 236, 241));
+    private static readonly Brush Muted = Frozen(Color.FromRgb(154, 163, 174));
+    private static readonly Brush Copper = Frozen(Color.FromRgb(31, 145, 80));
+    private static readonly Brush RecordRed = Frozen(Color.FromRgb(229, 72, 77));
 
     private readonly WaveformCache _waves = new();
     private readonly Dictionary<string, PeakData> _peaks = new();
@@ -88,8 +100,25 @@ public sealed class TimelinePanel : FrameworkElement
         (track.Clips.Count > 0 || track.Takes.Count == 0 ? 1 : 0) + track.Takes.Count +
         (LiveRecording?.TrackId == track.Id && track.Takes.Count > 0 ? 1 : 0);
 
-    private double TrackHeight(Track track) => Math.Max(TrackLabel + 6 + LaneCount(track) * 38,
-        Math.Max(72, (ActualHeight - Header) / Math.Max(1, Project?.Tracks.Count ?? 1)));
+    private bool HasContent(Track track) =>
+        track.Clips.Count > 0 || track.Takes.Count > 0 || LiveRecording?.TrackId == track.Id;
+
+    private double TrackHeight(Track track)
+    {
+        if (Project == null) return EmptyTrack;
+        var tracks = Project.Tracks;
+        var avail = Math.Max(0, ActualHeight - Header);
+        var withContent = tracks.Count(HasContent);
+        double Natural(Track t) => TrackLabel + 6 + LaneCount(t) * MinLane;
+        if (withContent == 0)
+            // Nothing recorded yet: split the board evenly so the drop hints have room.
+            return Math.Max(Natural(track), Math.Min(220, avail / Math.Max(1, tracks.Count)));
+        if (!HasContent(track))
+            return EmptyTrack;
+        var share = (avail - (tracks.Count - withContent) * EmptyTrack) / withContent;
+        var cap = TrackLabel + 6 + LaneCount(track) * MaxLane;
+        return Math.Max(Natural(track), Math.Min(cap, share));
+    }
 
     private double ContentHeight => Project?.Tracks.Sum(TrackHeight) ?? 0;
 
@@ -123,14 +152,14 @@ public sealed class TimelinePanel : FrameworkElement
 
     private static Lane MakeLane(Track track, Take? take, double top, double laneH, int index, double w) =>
         new(track, take,
-            new Rect(0, top + laneH * index, w, Math.Max(1, laneH - 2)),
+            new Rect(0, top + laneH * index + 2, w, Math.Max(1, laneH - 4)),
             new Rect(0, top + laneH * index, w, Math.Max(1, laneH)));
 
     protected override void OnRender(DrawingContext dc)
     {
         var w = ActualWidth;
         var h = ActualHeight;
-        dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(22, 17, 14)), null, new Rect(0, 0, w, h));
+        dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(16, 18, 21)), null, new Rect(0, 0, w, h));
         if (Project == null) return;
         if (ViewStartFrame > Math.Max(Project.LengthFrames(), _playhead))
             ViewStartFrame = 0; // a different, shorter song was opened
@@ -144,9 +173,10 @@ public sealed class TimelinePanel : FrameworkElement
             if (y + trackH > Header && y < h) DrawTrackBackground(dc, track, y, trackH, w);
             y += trackH;
         }
+        DrawBarGrid(dc, w, h);
         foreach (var lane in lanes)
             if (lane.Area.Bottom > Header && lane.Area.Top < h) DrawLane(dc, lane);
-        DrawEmptyHint(dc, w, h);
+        DrawEmptyHints(dc, lanes);
         dc.Pop();
         DrawRuler(dc, w);
         DrawSelection(dc, h);
@@ -307,25 +337,22 @@ public sealed class TimelinePanel : FrameworkElement
 
     private void DrawRuler(DrawingContext dc, double w)
     {
-        dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(42, 32, 24)), null, new Rect(0, 0, w, Header));
+        dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(27, 30, 35)), null, new Rect(0, 0, w, Header));
         if (Project == null) return;
         var beat = TimelineMath.SamplesPerBeat(Project.SampleRate, Project.TempoBpm);
         var bar = TimelineMath.SamplesPerBar(Project.SampleRate, Project.TempoBpm,
             Project.TimeSignature.Numerator, Project.TimeSignature.Denominator);
-        var type = new Typeface("Segoe UI");
         for (var frame = ViewStartFrame / beat * beat; ; frame += beat)
         {
             var x = FrameToX(frame);
             if (x > w) break;
             var isBar = frame % bar == 0;
-            dc.DrawLine(new Pen(new SolidColorBrush(isBar ? Color.FromRgb(196, 132, 74) : Color.FromRgb(80, 64, 52)), isBar ? 1.5 : 1),
+            dc.DrawLine(new Pen(new SolidColorBrush(isBar ? Color.FromRgb(31, 145, 80) : Color.FromRgb(60, 66, 76)), isBar ? 1.5 : 1),
                 new Point(x, isBar ? 8 : 16), new Point(x, Header));
             if (isBar)
             {
                 var barNum = (int)(frame / bar) + 1;
-                var text = new FormattedText(barNum.ToString(), CultureInfo.CurrentUICulture,
-                    FlowDirection.LeftToRight, type, 11, new SolidColorBrush(Color.FromRgb(185, 168, 148)), 1.25);
-                dc.DrawText(text, new Point(x + 4, 4));
+                dc.DrawText(Text(barNum.ToString(), 12, Cream, UiBold), new Point(x + 4, 3));
             }
         }
     }
@@ -333,22 +360,50 @@ public sealed class TimelinePanel : FrameworkElement
     private void DrawTrackBackground(DrawingContext dc, Track track, double y, double h, double w)
     {
         var bg = track.Role == TrackRole.Vocal
-            ? Color.FromRgb(48, 28, 26)
-            : Color.FromRgb(36, 30, 24);
+            ? Color.FromRgb(28, 30, 36)
+            : Color.FromRgb(24, 27, 31);
         dc.DrawRectangle(new SolidColorBrush(bg), null, new Rect(0, y, w, h));
         if (track.Id == SelectedTrackId)
         {
-            dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(35, 243, 230, 212)), null, new Rect(0, y, w, h));
+            dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(35, 232, 236, 241)), null, new Rect(0, y, w, h));
             dc.DrawRectangle(new SolidColorBrush(ColorFromHex(track.Color)), null, new Rect(0, y, 3, h));
         }
-        dc.DrawRectangle(new SolidColorBrush(track.Armed ? Color.FromRgb(85, 36, 33) : Color.FromRgb(42, 34, 28)),
+        dc.DrawRectangle(new SolidColorBrush(track.Armed ? Color.FromRgb(52, 26, 30) : Color.FromRgb(27, 30, 35)),
             null, new Rect(0, y, w, TrackLabel));
-        dc.DrawLine(new Pen(new SolidColorBrush(Color.FromRgb(63, 50, 40)), 1), new Point(0, y + h), new Point(w, y + h));
+        dc.DrawLine(new Pen(new SolidColorBrush(Color.FromRgb(42, 47, 55)), 1), new Point(0, y + h), new Point(w, y + h));
 
-        var label = new FormattedText((track.Armed ? "● " : "") + track.Name + (track.Armed ? "  · ARMED · R records here" : ""),
-            CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
-            new Typeface("Segoe UI"), 12, new SolidColorBrush(ColorFromHex(track.Color)), 1.25);
-        dc.DrawText(label, new Point(8, y + 4));
+        // Header: colour swatch, name, then a red pill when this is where Record goes.
+        dc.DrawRoundedRectangle(new SolidColorBrush(ColorFromHex(track.Color)), null, new Rect(10, y + 8, 9, 9), 2, 2);
+        var name = Text(track.Name, 12.5, Cream, UiBold);
+        dc.DrawText(name, new Point(26, y + (TrackLabel - name.Height) / 2));
+        var x = 26 + name.Width + 10;
+        var role = Text(track.Role == TrackRole.Vocal ? "voice" : track.Role == TrackRole.Backing ? "backing" : "audio", 11, Muted);
+        dc.DrawText(role, new Point(x, y + (TrackLabel - role.Height) / 2));
+        x += role.Width + 10;
+        if (track.Armed)
+        {
+            var pill = Text("● ARMED · press R to record", 10.5, Cream, UiBold);
+            var r = new Rect(x, y + 4, pill.Width + 14, TrackLabel - 8);
+            dc.DrawRoundedRectangle(RecordRed, null, r, r.Height / 2, r.Height / 2);
+            dc.DrawText(pill, new Point(r.X + 7, r.Y + (r.Height - pill.Height) / 2));
+        }
+    }
+
+    // Faint bar lines through the lanes so takes line up against the beat by eye.
+    private void DrawBarGrid(DrawingContext dc, double w, double h)
+    {
+        if (Project == null) return;
+        var bar = TimelineMath.SamplesPerBar(Project.SampleRate, Project.TempoBpm,
+            Project.TimeSignature.Numerator, Project.TimeSignature.Denominator);
+        if (bar <= 0) return;
+        var pen = new Pen(new SolidColorBrush(Color.FromArgb(22, 232, 236, 241)), 1);
+        pen.Freeze();
+        for (var frame = ViewStartFrame / bar * bar; ; frame += bar)
+        {
+            var x = Math.Round(FrameToX(frame)) + 0.5;
+            if (x > w) break;
+            dc.DrawLine(pen, new Point(x, Header), new Point(x, h));
+        }
     }
 
     private void DrawLane(DrawingContext dc, Lane lane)
@@ -385,16 +440,16 @@ public sealed class TimelinePanel : FrameworkElement
             SourceOffsetFrames = take.SourceOffsetFrames,
             LengthFrames = take.LengthFrames
         };
-        var takeColor = Color.FromArgb(heard ? (byte)200 : (byte)95, 180, 70, 70);
-        var caption = take.Name + (heard ? "  · you hear this one" : "");
-        DrawClip(dc, fake, lane.Area, takeColor, take.Id == SelectedClipId, caption, take.RelativePath, take.Id);
+        var takeColor = heard ? Color.FromRgb(22, 92, 56) : Color.FromRgb(40, 44, 52);
+        DrawClip(dc, fake, lane.Area, takeColor, take.Id == SelectedClipId, take.Name, take.RelativePath, take.Id,
+            heard, heard ? "you hear this one" : null);
 
         foreach (var region in track.Comp.Regions.Where(r => r.TakeId == take.Id))
         {
             var x1 = FrameToX(region.TimelineStartFrame);
             var x2 = FrameToX(region.EndFrame);
-            dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(70, 243, 230, 212)),
-                new Pen(new SolidColorBrush(Color.FromRgb(224, 166, 106)), 2),
+            dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(70, 232, 236, 241)),
+                new Pen(new SolidColorBrush(Color.FromRgb(61, 187, 111)), 2),
                 new Rect(x1, lane.Area.Y + 1, Math.Max(2, x2 - x1), Math.Max(1, lane.Area.Height - 2)));
         }
 
@@ -402,7 +457,7 @@ public sealed class TimelinePanel : FrameworkElement
         {
             var x1 = FrameToX(Math.Min(_compStart, _compEnd));
             var x2 = FrameToX(Math.Max(_compStart, _compEnd));
-            dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(110, 224, 166, 106)), null,
+            dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(110, 61, 187, 111)), null,
                 new Rect(x1, lane.Area.Y, Math.Max(2, x2 - x1), lane.Area.Height));
         }
     }
@@ -439,17 +494,20 @@ public sealed class TimelinePanel : FrameworkElement
     }
 
     private void DrawClip(DrawingContext dc, AudioClip clip, Rect lane, Color fill, bool selected,
-        string? caption = null, string? audioPath = null, string? peakKey = null)
+        string? caption = null, string? audioPath = null, string? peakKey = null,
+        bool emphasised = true, string? badge = null)
     {
         if (Project == null) return;
         var x1 = FrameToX(clip.StartFrame);
         var x2 = FrameToX(clip.EndFrame);
         var rect = new Rect(x1, lane.Y, Math.Max(3, x2 - x1), lane.Height);
-        // Selection is the white outline; the fill brightness is left to the caller (for takes it
-        // shows which one you hear).
+        // Selection is the cream outline; a heard take gets a copper edge; dimmed takes a dark one.
+        var edge = selected ? Color.FromRgb(232, 236, 241)
+            : badge != null ? Color.FromRgb(61, 187, 111)
+            : Color.FromRgb(10, 11, 13);
         dc.DrawRoundedRectangle(new SolidColorBrush(fill),
-            new Pen(new SolidColorBrush(selected ? Colors.White : Color.FromRgb(30, 20, 16)), selected ? 2 : 1),
-            rect, 3, 3);
+            new Pen(new SolidColorBrush(edge), selected || badge != null ? 1.5 : 1),
+            rect, 4, 4);
 
         if (clip.FadeInFrames > 0)
         {
@@ -471,14 +529,23 @@ public sealed class TimelinePanel : FrameworkElement
         {
             var peaks = LoadPeaks(audioPath, peakKey);
             if (peaks != null)
-                DrawPeaks(dc, peaks, clip, rect);
+                DrawPeaks(dc, peaks, clip, rect, emphasised ? (byte)215 : (byte)110);
         }
 
-        if (!string.IsNullOrEmpty(caption) && rect.Height >= 14)
+        if (!string.IsNullOrEmpty(caption) && rect.Height >= 16)
         {
-            var text = new FormattedText(caption, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
-                new Typeface("Segoe UI"), 11, Brushes.White, 1.25);
-            dc.DrawText(text, new Point(Math.Max(rect.X, 0) + 6, rect.Y + 2));
+            dc.PushClip(new RectangleGeometry(rect));
+            var text = Text(caption, 11.5, emphasised ? Cream : Muted, UiBold);
+            var cx = Math.Max(rect.X, 0) + 7;
+            dc.DrawText(text, new Point(cx, rect.Y + 3));
+            if (badge != null && rect.Height >= 20)
+            {
+                var b = Text("▶ " + badge, 10.5, new SolidColorBrush(Color.FromRgb(18, 20, 23)), UiBold);
+                var r = new Rect(cx + text.Width + 8, rect.Y + 3, b.Width + 12, Math.Max(text.Height, b.Height));
+                dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(61, 187, 111)), null, r, r.Height / 2, r.Height / 2);
+                dc.DrawText(b, new Point(r.X + 6, r.Y + (r.Height - b.Height) / 2));
+            }
+            dc.Pop();
         }
     }
 
@@ -507,12 +574,12 @@ public sealed class TimelinePanel : FrameworkElement
 
     // One line per visible pixel column (the min/max of the buckets under it), not one per bucket:
     // a 3-minute take is ~34,000 buckets and the timeline redraws 20 times a second.
-    private void DrawPeaks(DrawingContext dc, PeakData peaks, AudioClip clip, Rect rect)
+    private void DrawPeaks(DrawingContext dc, PeakData peaks, AudioClip clip, Rect rect, byte alpha = 200)
     {
         if (peaks.Hop <= 0 || peaks.Max.Length == 0 || rect.Width <= 0) return;
         var startBucket = clip.SourceOffsetFrames / (double)peaks.Hop;
         var bucketsPerPixel = clip.LengthFrames / (double)peaks.Hop / rect.Width;
-        var pen = new Pen(new SolidColorBrush(Color.FromArgb(200, 243, 230, 212)), 1);
+        var pen = new Pen(new SolidColorBrush(Color.FromArgb(alpha, 243, 230, 212)), 1);
         pen.Freeze();
         var mid = rect.Y + rect.Height / 2;
         var amp = rect.Height * 0.42;
@@ -534,22 +601,30 @@ public sealed class TimelinePanel : FrameworkElement
         }
     }
 
-    // An empty song says how to get the beat in, instead of showing a blank board.
-    private void DrawEmptyHint(DrawingContext dc, double w, double h)
+    // Each empty track says what goes there, inside a dashed drop zone, instead of a blank board.
+    private void DrawEmptyHints(DrawingContext dc, List<Lane> lanes)
     {
-        if (Project == null || LiveRecording != null || Project.Tracks.Any(t => t.Clips.Count > 0 || t.Takes.Count > 0)) return;
-        var text = new FormattedText("Drag a WAV or MP3 backing track here, or click Import backing track (Ctrl+I).\n" +
-                                     "No backing track? Just press R and record.",
-            CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), 15,
-            new SolidColorBrush(Color.FromRgb(185, 168, 148)), 1.25)
+        if (Project == null) return;
+        var dash = new Pen(new SolidColorBrush(Color.FromRgb(58, 64, 74)), 1) { DashStyle = new DashStyle([4, 4], 0) };
+        dash.Freeze();
+        foreach (var lane in lanes)
         {
-            TextAlignment = TextAlignment.Center,
-            MaxTextWidth = Math.Max(100, w - 40)
-        };
-        // Centre it in the backing track's lane, where the file will land.
-        var area = LayoutLanes().FirstOrDefault(l => l.Track.Role == TrackRole.Backing).Area;
-        var centreY = area.Height > 0 ? area.Y + area.Height / 2 : Header + (h - Header) / 2;
-        dc.DrawText(text, new Point(20, centreY - text.Height / 2));
+            var track = lane.Track;
+            if (lane.Take != null || lane.IsLive || HasContent(track)) continue;
+            var zone = new Rect(lane.Area.X + 10, lane.Area.Y + 4, Math.Max(0, lane.Area.Width - 20), Math.Max(0, lane.Area.Height - 10));
+            if (zone.Height < 18 || zone.Width < 60) continue;
+            dc.DrawRoundedRectangle(null, dash, zone, 4, 4);
+            var hint = track.Role == TrackRole.Backing
+                ? "Drop a WAV or MP3 backing track here, or click Import WAV / MP3"
+                : track.Armed
+                    ? "Ready · press R (or Record) to record here"
+                    : "Empty · click this track, then Arm selected to record here";
+            var text = Text(hint, 13, Muted);
+            text.TextAlignment = TextAlignment.Center;
+            text.MaxTextWidth = Math.Max(60, zone.Width - 20);
+            text.MaxLineCount = 2;
+            dc.DrawText(text, new Point(zone.X + 10, zone.Y + (zone.Height - text.Height) / 2));
+        }
     }
 
     private void DrawSelection(DrawingContext dc, double h)
@@ -564,14 +639,14 @@ public sealed class TimelinePanel : FrameworkElement
         var x1 = FrameToX(start);
         var x2 = FrameToX(end);
         var width = Math.Max(2, x2 - x1);
-        dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(150, 224, 166, 106)), null, new Rect(x1, 0, width, Header));
-        dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(26, 243, 230, 212)), null, new Rect(x1, Header, width, h - Header));
+        dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(150, 61, 187, 111)), null, new Rect(x1, 0, width, Header));
+        dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(26, 232, 236, 241)), null, new Rect(x1, Header, width, h - Header));
     }
 
     private void DrawPlayhead(DrawingContext dc, double h)
     {
         var x = FrameToX(Playhead);
-        dc.DrawLine(new Pen(new SolidColorBrush(Color.FromRgb(243, 230, 212)), 1.5),
+        dc.DrawLine(new Pen(new SolidColorBrush(Color.FromRgb(232, 236, 241)), 1.5),
             new Point(x, 0), new Point(x, h));
         var tri = new StreamGeometry();
         using (var ctx = tri.Open())
@@ -580,7 +655,7 @@ public sealed class TimelinePanel : FrameworkElement
             ctx.LineTo(new Point(x + 6, 0), true, false);
             ctx.LineTo(new Point(x, Header - 4), true, false);
         }
-        dc.DrawGeometry(new SolidColorBrush(Color.FromRgb(196, 60, 60)), null, tri);
+        dc.DrawGeometry(new SolidColorBrush(Color.FromRgb(229, 72, 77)), null, tri);
     }
 
     private void DrawLoop(DrawingContext dc, double h)
@@ -588,7 +663,7 @@ public sealed class TimelinePanel : FrameworkElement
         if (Project?.Loop.Enabled != true) return;
         var x1 = FrameToX(Project.Loop.StartFrame);
         var x2 = FrameToX(Project.Loop.EndFrame);
-        dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(28, 196, 132, 74)), null,
+        dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(28, 31, 145, 80)), null,
             new Rect(x1, Header, Math.Max(2, x2 - x1), h - Header));
     }
 
@@ -619,6 +694,17 @@ public sealed class TimelinePanel : FrameworkElement
     private long XToFrame(double x) =>
         Project == null ? 0 : (long)Math.Max(0, ViewStartFrame + x / PixelsPerSecond * Project.SampleRate);
 
+    private FormattedText Text(string s, double size, Brush brush, Typeface? face = null) =>
+        new(s, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, face ?? Ui, size, brush,
+            VisualTreeHelper.GetDpi(this).PixelsPerDip);
+
+    private static Brush Frozen(Color c)
+    {
+        var b = new SolidColorBrush(c);
+        b.Freeze();
+        return b;
+    }
+
     private static Color ColorFromHex(string hex)
     {
         try
@@ -628,7 +714,7 @@ public sealed class TimelinePanel : FrameworkElement
         }
         catch
         {
-            return Color.FromRgb(196, 132, 74);
+            return Color.FromRgb(31, 145, 80);
         }
     }
 }

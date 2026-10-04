@@ -2,6 +2,9 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using DragCompletedEventHandler = System.Windows.Controls.Primitives.DragCompletedEventHandler;
+using DragStartedEventHandler = System.Windows.Controls.Primitives.DragStartedEventHandler;
+using Thumb = System.Windows.Controls.Primitives.Thumb;
 using System.Windows.Media;
 using RyanMusicStudio.Core.Dsp;
 using RyanMusicStudio.Core.Model;
@@ -23,6 +26,9 @@ public sealed class TrackMixerPanel : UserControl
     public Action<Track, double>? SetTrackGain { get; set; }
     public Action<Track, double>? SetTrackPan { get; set; }
     public Action<Track, string>? ApplyPreset { get; set; }
+    /// <summary>Raised when a gain or pan drag starts and ends.</summary>
+    public Action? BeginMixGesture { get; set; }
+    public Action? EndMixGesture { get; set; }
     /// <summary>Optional linear peak reader, where 1 is full scale. Never called on the audio thread.</summary>
     public Func<Track, double>? ReadTrackLevel { get; set; }
 
@@ -34,7 +40,7 @@ public sealed class TrackMixerPanel : UserControl
 
     public TrackMixerPanel()
     {
-        Foreground = Brush("#F3E6D4");
+        Foreground = Brush("#E8ECF1");
         Content = new ScrollViewer
         {
             Content = _rows,
@@ -112,13 +118,14 @@ public sealed class TrackMixerPanel : UserControl
 
     private sealed class TrackRow
     {
-        private static readonly Brush Copper = Brush("#C4844A");
-        private static readonly Brush Line = Brush("#5A4636");
-        private static readonly Brush Panel = Brush("#221A15");
-        private static readonly Brush Active = Brush("#4A3A2C");
-        private static readonly Brush Cream = Brush("#F3E6D4");
-        private static readonly Brush Red = Brush("#E87973");
-        private static readonly Brush Green = Brush("#91B77A");
+        private static readonly Brush Copper = Brush("#1F9150");
+        private static readonly Brush Line = Brush("#3A404A");
+        private static readonly Brush Panel = Brush("#171A1E");
+        private static readonly Brush Active = Brush("#30353D");
+        private static readonly Brush Cream = Brush("#E8ECF1");
+        private static readonly Brush Red = Brush("#F07176");
+        private static readonly Brush Muted = Brush("#9AA3AE");
+        private static readonly Brush Green = Brush("#3FB97A");
         private readonly Button _name;
         private readonly TextBlock _state = new() { FontSize = 11, Margin = new Thickness(4, 3, 4, 5) };
         private readonly Button _mute;
@@ -144,6 +151,13 @@ public sealed class TrackMixerPanel : UserControl
             _track = track;
             _name = MakeButton(track.Name);
             _name.HorizontalContentAlignment = HorizontalAlignment.Left;
+            _name.FontSize = 14;
+            _name.FontWeight = FontWeights.SemiBold;
+            _name.BorderThickness = new Thickness(0);
+            _name.Background = Brushes.Transparent;
+            _name.Padding = new Thickness(4, 4, 4, 4);
+            Ui.SetFlat(_name, true);
+            Ui.SetCornerRadius(_name, new CornerRadius(8));
             _name.Click += (_, _) => owner.Choose(_track);
             _mute = MakeButton("Mute");
             _solo = MakeButton("Solo");
@@ -163,7 +177,7 @@ public sealed class TrackMixerPanel : UserControl
             _preset.ToolTip = "Apply a vocal starting point: Clean, Warm or Spacious. This replaces the current effect chain.";
             stack.Children.Add(_preset);
             stack.Children.Add(_level);
-            Root = new Border { Child = stack, Padding = new Thickness(8), Margin = new Thickness(0, 0, 0, 7), BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(3), Background = Panel };
+            Root = new Border { Child = stack, Padding = new Thickness(8), Margin = new Thickness(0, 0, 0, 8), BorderThickness = new Thickness(1.5), CornerRadius = new CornerRadius(14), Background = Panel };
             _gain.ValueChanged += (_, _) =>
             {
                 _gainValue.Text = _gain.Value.ToString("0.0", CultureInfo.InvariantCulture) + " dB";
@@ -174,6 +188,11 @@ public sealed class TrackMixerPanel : UserControl
                 _panValue.Text = PanText(_pan.Value);
                 if (!_refreshing) owner.SetTrackPan?.Invoke(_track, _pan.Value);
             };
+            foreach (var slider in new[] { _gain, _pan })
+            {
+                slider.AddHandler(Thumb.DragStartedEvent, new DragStartedEventHandler((_, _) => owner.BeginMixGesture?.Invoke()));
+                slider.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler((_, _) => owner.EndMixGesture?.Invoke()));
+            }
             _preset.SelectionChanged += (_, _) =>
             {
                 if (!_refreshing && _preset.SelectedItem is string name)
@@ -192,9 +211,11 @@ public sealed class TrackMixerPanel : UserControl
             {
                 Root.BorderBrush = selected ? Copper : Line;
                 _name.Content = track.Name;
-                _name.Background = selected ? Active : Panel;
-                _state.Text = string.Join("  ·  ", new[] { track.Role.ToString(), selected ? "SELECTED" : null, track.Armed ? "● ARMED" : null }.Where(s => s != null));
-                _state.Foreground = track.Armed ? Red : Cream;
+                _name.Foreground = selected ? Copper : Cream;
+                // The copper border shows selection; the line underneath only says what the track is.
+                _state.Text = string.Join("  ·  ", new[] { track.Role.ToString(), track.Armed ? "● armed for recording" : null }.Where(s => s != null));
+                _state.Foreground = track.Armed ? Red : Muted;
+                AutomationProperties.SetItemStatus(_name, selected ? "selected" : "");
                 _mute.Content = track.Mute ? "Muted" : "Mute";
                 _solo.Content = track.Solo ? "Solo on" : "Solo";
                 _mute.Background = track.Mute ? Active : Panel;
