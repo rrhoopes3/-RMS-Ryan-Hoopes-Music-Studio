@@ -2,6 +2,7 @@ using NAudio.Wave;
 using RyanMusicStudio.Core.Dsp;
 using RyanMusicStudio.Core.Editing;
 using RyanMusicStudio.Core.Model;
+using RyanMusicStudio.Core.Studio;
 using RyanMusicStudio.Core.Timeline;
 using RyanMusicStudio.Engine.IO;
 using RyanMusicStudio.Engine.Media;
@@ -24,6 +25,8 @@ public sealed class TrackMix
     public required bool Solo { get; init; }
     public required EffectChainProcessor Effects { get; init; }
     public required BoundSpan[] Spans { get; init; }
+    /// <summary>The generated one-bar backing repeats during live playback only.</summary>
+    public CachedAudio? StudioBed { get; init; }
 }
 
 public sealed class MixSnapshot
@@ -198,7 +201,8 @@ public sealed class ProjectMixer : ISampleProvider
                 Mute = track.Mute,
                 Solo = track.Solo,
                 Effects = effects,
-                Spans = bound.ToArray()
+                Spans = bound.ToArray(),
+                StudioBed = bound.FirstOrDefault(b => b.Span.SourceId == StudioSong.BedMediaId)?.Audio
             });
         }
 
@@ -248,9 +252,23 @@ public sealed class ProjectMixer : ISampleProvider
         for (var rendered = 0; rendered < frames;)
         {
             var segmentFrames = FramesToRender(ref playhead, frames - rendered, loop, loopEnabled);
+            // The transport and recorded tracks keep advancing while the generated beat repeats.
+            // Export uses the explicit bed tiles, preserving the arranged scope and duration.
+            var bed = !ExportMode ? track.StudioBed : null;
+            if (bed is { Frames: > 0 })
+            {
+                for (var i = 0; i < segmentFrames; i++)
+                {
+                    var src = ((playhead + i) % bed.Frames) * bed.Channels;
+                    var di = (rendered + i) * 2;
+                    _trackScratch[di] += bed.Interleaved[src];
+                    _trackScratch[di + 1] += bed.Interleaved[src + (bed.Channels > 1 ? 1 : 0)];
+                }
+            }
             foreach (var bound in track.Spans)
             {
                 var span = bound.Span;
+                if (bed != null && span.SourceId == StudioSong.BedMediaId) continue;
                 var overlap = TimelineMath.OverlapLength(playhead, segmentFrames, span.TimelineStart, span.Length);
                 if (overlap <= 0) continue;
                 var destStart = (int)Math.Max(0, span.TimelineStart - playhead);

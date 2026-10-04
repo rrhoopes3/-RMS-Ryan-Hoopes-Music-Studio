@@ -117,6 +117,21 @@ public class StudioSoundTests
         Assert.False(StudioSong.NeedsFit(project));
         Assert.False(StudioSong.LooksEmpty(project));
 
+        project.Loop.Enabled = false;
+        Assert.False(StudioSong.NeedsFit(project));
+        project.Loop.Enabled = true;
+        project.Loop.StartFrame = bar;
+        project.Loop.EndFrame = bar * 2;
+        Assert.False(StudioSong.NeedsFit(project));
+
+        beds[1].StartFrame += 100;
+        Assert.True(StudioSong.NeedsFit(project));
+        beds[1].StartFrame -= 100;
+        project.Media.Single(m => m.Id == StudioSong.BedMediaId).LengthFrames--;
+        Assert.True(StudioSong.NeedsFit(project));
+        project.Media.Single(m => m.Id == StudioSong.BedMediaId).LengthFrames++;
+        Assert.False(StudioSong.NeedsFit(project));
+
         StudioSong.ArmBeatLoop(project);
         Assert.Equal(bar, project.Loop.EndFrame);
         Assert.False(StudioSong.StopTakeAtLoopWrap(project));

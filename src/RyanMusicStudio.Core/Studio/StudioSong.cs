@@ -13,17 +13,23 @@ public static class StudioSong
     public const string BedClipId = "studio-bed-clip";
     public const string BedRelativePath = "media/working/studio-bed.wav";
 
-    public static long BarFrames(int sampleRate, double tempoBpm)
+    public static long BarFrames(int sampleRate, double tempoBpm, int numerator = 4, int denominator = 4)
     {
+        if (numerator != 4 || denominator != 4)
+            return Math.Max(SongSketch.StepCount, TimelineMath.SamplesPerBar(sampleRate, tempoBpm, numerator, denominator));
+        // Preserve the sample timing of existing 4/4 patterns.
         var step = Math.Max(1, TimelineMath.SamplesPerBeat(sampleRate, tempoBpm) / 4);
         return step * SongSketch.StepCount;
     }
 
-    public static int StepAt(int sampleRate, double tempoBpm, long frame)
+    public static long BarFrames(ProjectDocument project) =>
+        BarFrames(project.SampleRate, project.TempoBpm, project.TimeSignature.Numerator, project.TimeSignature.Denominator);
+
+    public static int StepAt(int sampleRate, double tempoBpm, long frame, int numerator = 4, int denominator = 4)
     {
-        var step = Math.Max(1, TimelineMath.SamplesPerBeat(sampleRate, tempoBpm) / 4);
+        var bar = BarFrames(sampleRate, tempoBpm, numerator, denominator);
         if (frame < 0) frame = 0;
-        return (int)((frame / step) % SongSketch.StepCount);
+        return (int)(((frame % bar + 1) * SongSketch.StepCount - 1) / bar);
     }
 
     public static bool HasBed(ProjectDocument project) =>
@@ -90,20 +96,32 @@ public static class StudioSong
 
     public static bool NeedsFit(ProjectDocument project)
     {
-        var bar = BarFrames(project.SampleRate, project.TempoBpm);
+        var bar = BarFrames(project);
         var cover = CoverFrames(project, bar);
-        var loopTarget = cover <= bar ? bar : cover;
-        if (!project.Loop.Enabled || project.Loop.StartFrame != 0 || project.Loop.EndFrame != loopTarget)
-            return true;
         var beat = project.Tracks.FirstOrDefault(t => t.Clips.Any(IsBedClip));
         if (beat == null) return HasBed(project) || !project.Studio.IsEmpty;
-        var end = beat.Clips.Where(IsBedClip).Select(c => c.EndFrame).DefaultIfEmpty(0).Max();
-        return end < cover;
+        var media = project.Media.FirstOrDefault(m => m.Id == BedMediaId);
+        if (media == null || media.LengthFrames != bar || media.WorkingSampleRate != project.SampleRate ||
+            media.Channels != 2 || media.WorkingRelativePath != BedRelativePath)
+            return true;
+
+        // Transport loops are user choices. Fit only describes the generated audio:
+        // complete, consecutive bars covering the song, with no gaps or stale tiles.
+        var tiles = beat.Clips.Where(IsBedClip).OrderBy(c => c.StartFrame).ToList();
+        if (tiles.Count != Math.Max(1, (int)Math.Ceiling(cover / (double)bar))) return true;
+        for (var i = 0; i < tiles.Count; i++)
+        {
+            var tile = tiles[i];
+            if (tile.MediaId != BedMediaId || tile.StartFrame != i * bar ||
+                tile.SourceOffsetFrames != 0 || tile.LengthFrames != bar)
+                return true;
+        }
+        return false;
     }
 
     public static void ArmBeatLoop(ProjectDocument project)
     {
-        var bar = BarFrames(project.SampleRate, project.TempoBpm);
+        var bar = BarFrames(project);
         project.Loop.Enabled = true;
         project.Loop.StartFrame = 0;
         project.Loop.EndFrame = bar;

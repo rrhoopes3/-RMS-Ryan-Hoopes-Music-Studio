@@ -2,6 +2,14 @@ namespace RyanMusicStudio.Core.Model;
 
 public static class ProjectFactory
 {
+    public static bool CanRecordInto(Track track) =>
+        track.Role is TrackRole.Audio or TrackRole.Vocal && track.Clips.Count == 0;
+
+    /// <summary>Selection resolves ambiguous legacy arming, but never records over imported audio.</summary>
+    public static Track? RecordingTarget(ProjectDocument project, string? selectedTrackId) =>
+        project.Tracks.FirstOrDefault(t => t.Id == selectedTrackId && t.Armed && CanRecordInto(t)) ??
+        project.Tracks.FirstOrDefault(t => t.Armed && CanRecordInto(t));
+
     public static readonly string[] TrackColors =
     [
         "#C17F45", "#B83232", "#6E8B6C", "#D4A574", "#4F6F8F", "#8A6A4B", "#C9B27C"
@@ -19,7 +27,7 @@ public static class ProjectFactory
             throw new ArgumentException("Project name is required.", nameof(name));
         if (!ProjectDocument.IsSupportedSampleRate(sampleRate))
             throw new ArgumentOutOfRangeException(nameof(sampleRate), "Choose 44.1 kHz or 48 kHz.");
-        if (tempoBpm is < 20 or > 300)
+        if (!double.IsFinite(tempoBpm) || tempoBpm is < 20 or > 300)
             throw new ArgumentOutOfRangeException(nameof(tempoBpm));
 
         var root = Path.GetFullPath(folder);
@@ -85,7 +93,7 @@ public static class ProjectFactory
             throw new ArgumentException("Song name is required.", nameof(name));
         if (!ProjectDocument.IsSupportedSampleRate(sampleRate))
             throw new ArgumentOutOfRangeException(nameof(sampleRate), "Choose 44.1 kHz or 48 kHz.");
-        if (tempoBpm is < 20 or > 300)
+        if (!double.IsFinite(tempoBpm) || tempoBpm is < 20 or > 300)
             throw new ArgumentOutOfRangeException(nameof(tempoBpm));
 
         var project = new ProjectDocument

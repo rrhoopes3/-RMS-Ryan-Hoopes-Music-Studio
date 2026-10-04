@@ -10,18 +10,17 @@ public static class StudioSynth
 {
     private static readonly float[] NoteHz = [261.63f, 293.66f, 329.63f, 349.23f, 392.00f, 440.00f, 493.88f, 523.25f];
 
-    public static float[] Render(SongSketch sketch, int sampleRate, double tempoBpm)
+    public static float[] Render(SongSketch sketch, int sampleRate, double tempoBpm, int numerator = 4, int denominator = 4)
     {
         sketch.Normalize();
-        var frames = StudioSong.BarFrames(sampleRate, tempoBpm);
+        var frames = StudioSong.BarFrames(sampleRate, tempoBpm, numerator, denominator);
         var buffer = new float[frames * 2];
-        var step = Math.Max(1, frames / SongSketch.StepCount);
         // Volume lives on the master fader so the wav stays at full level.
         const float gain = 1f;
 
         for (var i = 0; i < SongSketch.StepCount; i++)
         {
-            var at = (int)(i * step);
+            var at = (int)(i * frames / SongSketch.StepCount);
             if (sketch.Kick[i]) AddDrum(buffer, sampleRate, at, DrumVoice.Kick, gain, wrap: true);
             if (sketch.Snare[i]) AddDrum(buffer, sampleRate, at, DrumVoice.Snare, gain, wrap: true);
             if (sketch.Hat[i]) AddDrum(buffer, sampleRate, at, DrumVoice.Hat, gain, wrap: true);

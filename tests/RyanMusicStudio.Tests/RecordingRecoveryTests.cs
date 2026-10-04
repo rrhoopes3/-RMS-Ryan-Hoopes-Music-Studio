@@ -54,6 +54,7 @@ public class RecordingRecoveryTests
             var writer = new IncrementalWavWriter(path, project.SampleRate, 1);
             var cts = new CancellationTokenSource();
             var ring = (FloatRingBuffer)Field("_captureRing").GetValue(engine)!;
+            var waveform = new RecordingWaveform(track.Id, 0, project.SampleRate);
             const int tailFrames = 4800;
             Assert.Equal(tailFrames, ring.Write(Enumerable.Repeat(0.25f, tailFrames).ToArray()));
 
@@ -64,7 +65,7 @@ public class RecordingRecoveryTests
             {
                 if (!SpinWait.SpinUntil(() => cts.IsCancellationRequested, TimeSpan.FromSeconds(5)))
                     throw new TimeoutException("The take writer was never asked to stop.");
-                loop.Invoke(engine, [ring, writer, cts.Token]);
+                loop.Invoke(engine, [ring, writer, waveform, cts.Token]);
             });
 
             Field("_armedTrack").SetValue(engine, track);

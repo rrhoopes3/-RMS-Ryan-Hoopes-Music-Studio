@@ -5,6 +5,7 @@ using System.Windows.Media;
 using RyanMusicStudio.Core.Model;
 using RyanMusicStudio.Core.Timeline;
 using RyanMusicStudio.Engine.Media;
+using RyanMusicStudio.Engine.Audio;
 
 namespace RyanMusicStudio.App.Controls;
 
@@ -21,6 +22,8 @@ public sealed class TimelinePanel : FrameworkElement
     private long _dragClipStart;
     private bool _dragging;
     private long _playhead;
+    private double _verticalOffset;
+    private RecordingWaveformSnapshot? _liveRecording;
 
     // Ruler drag: marks a range for loop, punch-in and export.
     private bool _rangeDragging;
@@ -35,6 +38,13 @@ public sealed class TimelinePanel : FrameworkElement
     public ProjectDocument? Project { get; set; }
     public double PixelsPerSecond { get; set; } = 80;
     public string? SelectedClipId { get; set; }
+    public string? SelectedTrackId { get; set; }
+    public Action<string>? SelectTrack { get; set; }
+    public RecordingWaveformSnapshot? LiveRecording
+    {
+        get => _liveRecording;
+        set { _liveRecording = value; InvalidateVisual(); }
+    }
     public bool CompMode { get; set; }
     public Action<long>? Seek { get; set; }
     public Action<string, long>? MoveClip { get; set; }
@@ -43,7 +53,7 @@ public sealed class TimelinePanel : FrameworkElement
     public Action<string, long, long>? ChoosePart { get; set; }
     public Action<long, long>? SelectRange { get; set; }
 
-    /// <summary>First frame shown at the left edge; the view pages along with the playhead.</summary>
+    /// <summary>First frame shown at the left edge; the view follows the playhead at its right margin.</summary>
     public long ViewStartFrame { get; private set; }
 
     public long Playhead
@@ -54,6 +64,7 @@ public sealed class TimelinePanel : FrameworkElement
             if (value == _playhead) return;
             _playhead = value;
             FollowPlayhead();
+            InvalidateVisual();
         }
     }
 
@@ -62,6 +73,7 @@ public sealed class TimelinePanel : FrameworkElement
         Focusable = true;
         ClipToBounds = true;
         SnapsToDevicePixels = true;
+        ToolTip = "Click a track to select it. Wheel scrolls tracks; Shift+wheel scrolls time; Ctrl+wheel zooms.";
     }
 
     public void InvalidateProject() => InvalidateVisual();
@@ -70,7 +82,16 @@ public sealed class TimelinePanel : FrameworkElement
     /// One horizontal strip of a track: its imported clips, or one recorded take. Area is drawn;
     /// Slot is the full band (no gaps) used for clicks, so even very thin lanes hit the right take.
     /// </summary>
-    private readonly record struct Lane(Track Track, Take? Take, Rect Area, Rect Slot);
+    private readonly record struct Lane(Track Track, Take? Take, Rect Area, Rect Slot, bool IsLive = false);
+
+    private int LaneCount(Track track) =>
+        (track.Clips.Count > 0 || track.Takes.Count == 0 ? 1 : 0) + track.Takes.Count +
+        (LiveRecording?.TrackId == track.Id && track.Takes.Count > 0 ? 1 : 0);
+
+    private double TrackHeight(Track track) => Math.Max(TrackLabel + 6 + LaneCount(track) * 38,
+        Math.Max(72, (ActualHeight - Header) / Math.Max(1, Project?.Tracks.Count ?? 1)));
+
+    private double ContentHeight => Project?.Tracks.Sum(TrackHeight) ?? 0;
 
     // Each take gets its own lane so a singer can see, hear and pick between passes.
     private List<Lane> LayoutLanes()
@@ -78,12 +99,13 @@ public sealed class TimelinePanel : FrameworkElement
         var lanes = new List<Lane>();
         if (Project == null) return lanes;
         var w = ActualWidth;
-        var trackH = Math.Max(72, (ActualHeight - Header) / Math.Max(1, Project.Tracks.Count));
-        var y = Header;
+        _verticalOffset = Math.Clamp(_verticalOffset, 0, Math.Max(0, ContentHeight - Math.Max(0, ActualHeight - Header)));
+        var y = Header - _verticalOffset;
         foreach (var track in Project.Tracks)
         {
+            var trackH = TrackHeight(track);
             var hasClipLane = track.Clips.Count > 0 || track.Takes.Count == 0;
-            var count = (hasClipLane ? 1 : 0) + track.Takes.Count;
+            var count = LaneCount(track);
             var top = y + TrackLabel;
             // Lanes share the track's height (thin with many takes) and never spill into the next track.
             var laneH = Math.Max(0, (trackH - TrackLabel - 6) / count);
@@ -92,6 +114,8 @@ public sealed class TimelinePanel : FrameworkElement
                 lanes.Add(MakeLane(track, null, top, laneH, i++, w));
             foreach (var take in track.Takes)
                 lanes.Add(MakeLane(track, take, top, laneH, i++, w));
+            if (LiveRecording?.TrackId == track.Id && track.Takes.Count > 0)
+                lanes.Add(MakeLane(track, null, top, laneH, i, w) with { IsLive = true });
             y += trackH;
         }
         return lanes;
@@ -111,17 +135,20 @@ public sealed class TimelinePanel : FrameworkElement
         if (ViewStartFrame > Math.Max(Project.LengthFrames(), _playhead))
             ViewStartFrame = 0; // a different, shorter song was opened
 
-        DrawRuler(dc, w);
-        var trackH = Math.Max(72, (h - Header) / Math.Max(1, Project.Tracks.Count));
-        var y = Header;
+        var lanes = LayoutLanes();
+        dc.PushClip(new RectangleGeometry(new Rect(0, Header, w, Math.Max(0, h - Header))));
+        var y = Header - _verticalOffset;
         foreach (var track in Project.Tracks)
         {
-            DrawTrackBackground(dc, track, y, trackH, w);
+            var trackH = TrackHeight(track);
+            if (y + trackH > Header && y < h) DrawTrackBackground(dc, track, y, trackH, w);
             y += trackH;
         }
-        foreach (var lane in LayoutLanes())
-            DrawLane(dc, lane);
+        foreach (var lane in lanes)
+            if (lane.Area.Bottom > Header && lane.Area.Top < h) DrawLane(dc, lane);
         DrawEmptyHint(dc, w, h);
+        dc.Pop();
+        DrawRuler(dc, w);
         DrawSelection(dc, h);
         DrawLoop(dc, h);
         DrawPlayhead(dc, h);
@@ -145,6 +172,17 @@ public sealed class TimelinePanel : FrameworkElement
         }
 
         var lane = HitLane(p);
+        var hitTrack = lane?.Track ?? HitTrack(p);
+        if (hitTrack != null)
+        {
+            SelectedTrackId = hitTrack.Id;
+            SelectTrack?.Invoke(hitTrack.Id);
+        }
+        if (lane == null || lane.Value.IsLive)
+        {
+            InvalidateVisual();
+            return;
+        }
         if (lane?.Take is { } take)
         {
             SelectedClipId = take.Id;
@@ -235,8 +273,17 @@ public sealed class TimelinePanel : FrameworkElement
     {
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
         {
+            var pointerX = e.GetPosition(this).X;
+            var anchor = XToFrame(pointerX);
             PixelsPerSecond = Math.Clamp(PixelsPerSecond * (e.Delta > 0 ? 1.15 : 0.87), 20, 400);
+            if (Project != null)
+                ViewStartFrame = Math.Max(0, anchor - (long)(pointerX / PixelsPerSecond * Project.SampleRate));
             Zoomed?.Invoke(PixelsPerSecond);
+        }
+        else if (Project != null && !Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) && ContentHeight > ActualHeight - Header)
+        {
+            _verticalOffset = Math.Clamp(_verticalOffset - e.Delta * 0.5, 0,
+                Math.Max(0, ContentHeight - Math.Max(0, ActualHeight - Header)));
         }
         else if (Project != null)
         {
@@ -254,7 +301,7 @@ public sealed class TimelinePanel : FrameworkElement
         if (Project == null || ActualWidth <= 0) return;
         var x = FrameToX(_playhead);
         if (x >= 0 && x <= ActualWidth - 24) return;
-        var lead = (long)(ActualWidth * 0.1 / PixelsPerSecond * Project.SampleRate);
+        var lead = (long)((x < 0 ? ActualWidth * 0.1 : ActualWidth - 24) / PixelsPerSecond * Project.SampleRate);
         ViewStartFrame = Math.Max(0, _playhead - lead);
     }
 
@@ -289,9 +336,16 @@ public sealed class TimelinePanel : FrameworkElement
             ? Color.FromRgb(48, 28, 26)
             : Color.FromRgb(36, 30, 24);
         dc.DrawRectangle(new SolidColorBrush(bg), null, new Rect(0, y, w, h));
+        if (track.Id == SelectedTrackId)
+        {
+            dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(35, 243, 230, 212)), null, new Rect(0, y, w, h));
+            dc.DrawRectangle(new SolidColorBrush(ColorFromHex(track.Color)), null, new Rect(0, y, 3, h));
+        }
+        dc.DrawRectangle(new SolidColorBrush(track.Armed ? Color.FromRgb(85, 36, 33) : Color.FromRgb(42, 34, 28)),
+            null, new Rect(0, y, w, TrackLabel));
         dc.DrawLine(new Pen(new SolidColorBrush(Color.FromRgb(63, 50, 40)), 1), new Point(0, y + h), new Point(w, y + h));
 
-        var label = new FormattedText((track.Armed ? "● " : "") + track.Name + (track.Armed ? "  · R records here" : ""),
+        var label = new FormattedText((track.Armed ? "● " : "") + track.Name + (track.Armed ? "  · ARMED · R records here" : ""),
             CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
             new Typeface("Segoe UI"), 12, new SolidColorBrush(ColorFromHex(track.Color)), 1.25);
         dc.DrawText(label, new Point(8, y + 4));
@@ -300,6 +354,11 @@ public sealed class TimelinePanel : FrameworkElement
     private void DrawLane(DrawingContext dc, Lane lane)
     {
         var track = lane.Track;
+        if (lane.IsLive)
+        {
+            DrawLiveRecording(dc, lane.Area);
+            return;
+        }
         if (lane.Take is not { } take)
         {
             var color = ColorFromHex(track.Color);
@@ -308,6 +367,8 @@ public sealed class TimelinePanel : FrameworkElement
                 color.A = clip.Id == SelectedClipId ? (byte)230 : (byte)170;
                 DrawClip(dc, clip, lane.Area, color, clip.Id == SelectedClipId);
             }
+            if (LiveRecording?.TrackId == track.Id && track.Takes.Count == 0)
+                DrawLiveRecording(dc, lane.Area);
             return;
         }
 
@@ -344,6 +405,37 @@ public sealed class TimelinePanel : FrameworkElement
             dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(110, 224, 166, 106)), null,
                 new Rect(x1, lane.Area.Y, Math.Max(2, x2 - x1), lane.Area.Height));
         }
+    }
+
+    private void DrawLiveRecording(DrawingContext dc, Rect lane)
+    {
+        if (LiveRecording is not { } live || live.SampleRate <= 0) return;
+        var startX = FrameToX(live.StartFrame);
+        var endX = startX + live.LengthFrames / (double)live.SampleRate * PixelsPerSecond;
+        var left = Math.Max(0, startX);
+        var right = Math.Min(ActualWidth, Math.Max(startX + 3, endX));
+        if (right <= left) return;
+        var rect = new Rect(left, lane.Y, right - left, lane.Height);
+        dc.PushClip(new RectangleGeometry(rect));
+        dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(210, 133, 43, 43)),
+            new Pen(Brushes.IndianRed, 1), rect, 3, 3);
+        var mid = rect.Y + rect.Height * 0.6;
+        var amplitude = rect.Height * 0.32;
+        // Buckets are bounded by the engine and retain their relative time after compaction.
+        foreach (var bucket in live.Buckets)
+        {
+            var x1 = startX + bucket.StartFrame / (double)live.SampleRate * PixelsPerSecond;
+            var x2 = startX + (bucket.StartFrame + bucket.FrameCount) / (double)live.SampleRate * PixelsPerSecond;
+            if (x2 < left || x1 > right) continue;
+            var top = mid - Math.Clamp(bucket.Maximum, -1, 1) * amplitude;
+            var bottom = mid - Math.Clamp(bucket.Minimum, -1, 1) * amplitude;
+            dc.DrawRectangle(Brushes.MistyRose, null,
+                new Rect(Math.Max(left, x1), top, Math.Max(1, Math.Min(right, x2) - Math.Max(left, x1)), Math.Max(1, bottom - top)));
+        }
+        var label = new FormattedText("● Recording", CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
+            new Typeface("Segoe UI"), 11, Brushes.White, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        dc.DrawText(label, new Point(left + 6, rect.Y + 2));
+        dc.Pop();
     }
 
     private void DrawClip(DrawingContext dc, AudioClip clip, Rect lane, Color fill, bool selected,
@@ -445,7 +537,7 @@ public sealed class TimelinePanel : FrameworkElement
     // An empty song says how to get the beat in, instead of showing a blank board.
     private void DrawEmptyHint(DrawingContext dc, double w, double h)
     {
-        if (Project == null || Project.Tracks.Any(t => t.Clips.Count > 0 || t.Takes.Count > 0)) return;
+        if (Project == null || LiveRecording != null || Project.Tracks.Any(t => t.Clips.Count > 0 || t.Takes.Count > 0)) return;
         var text = new FormattedText("Drag a WAV or MP3 backing track here, or click Import backing track (Ctrl+I).\n" +
                                      "No backing track? Just press R and record.",
             CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), 15,
@@ -505,6 +597,19 @@ public sealed class TimelinePanel : FrameworkElement
         foreach (var lane in LayoutLanes())
             if (p.Y >= lane.Slot.Top && p.Y < lane.Slot.Bottom)
                 return lane;
+        return null;
+    }
+
+    private Track? HitTrack(Point p)
+    {
+        if (Project == null || p.Y < Header) return null;
+        var y = Header - _verticalOffset;
+        foreach (var track in Project.Tracks)
+        {
+            var height = TrackHeight(track);
+            if (p.Y >= y && p.Y < y + height) return track;
+            y += height;
+        }
         return null;
     }
 

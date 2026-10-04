@@ -42,7 +42,23 @@ public partial class NewProjectWindow : Window
             MessageBox.Show("Choose a folder.", "RMS");
             return;
         }
-        Directory.CreateDirectory(Folder);
+        if (!double.TryParse(TempoBox.Text, out var tempo) || !double.IsFinite(tempo) || tempo < 40 || tempo > 240)
+        {
+            MessageBox.Show(this, "Choose a tempo from 40 to 240 beats per minute.", "RMS");
+            return;
+        }
+        if (!int.TryParse(NumBox.Text, out var numerator) || numerator < 1 || numerator > 32 ||
+            !int.TryParse(DenBox.Text, out var denominator) || denominator is not (1 or 2 or 4 or 8 or 16 or 32))
+        {
+            MessageBox.Show(this, "Choose 1–32 beats and a note value of 1, 2, 4, 8, 16, or 32.", "RMS");
+            return;
+        }
+        try { Directory.CreateDirectory(Folder); }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "Could not use that folder: " + ex.Message, "RMS");
+            return;
+        }
         DialogResult = true;
     }
 }

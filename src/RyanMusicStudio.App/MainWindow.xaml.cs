@@ -1,4 +1,5 @@
-﻿using System.Windows;
+using System.IO;
+using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -32,12 +33,26 @@ public partial class MainWindow : Window
     private int _refreshQueued;
     private bool _closePending;
     private bool _closeReady;
+    private bool _exporting;
 
     public MainWindow()
     {
         _syncing = true;
         InitializeComponent();
         BuildPads();
+        Timeline.Seek = _session.Seek;
+        Timeline.SelectTrack = id => _session.SelectTrack(id);
+        Timeline.SelectClip = id => { _session.SelectedClipId = id; Refresh(); };
+        Timeline.MoveClip = (id, frame) => { _session.SelectedClipId = id; _session.MoveSelected(frame); };
+        Timeline.SelectRange = _session.SetSelection;
+        Timeline.ChoosePart = _session.ChoosePart;
+        Timeline.Zoomed = zoom => { _session.Zoom = zoom; Refresh(); };
+        Mixer.SelectTrack = track => _session.SelectTrack(track.Id);
+        Mixer.ToggleMute = _session.ToggleMute;
+        Mixer.ToggleSolo = _session.ToggleSolo;
+        Mixer.SetTrackGain = _session.SetTrackGain;
+        Mixer.SetTrackPan = _session.SetTrackPan;
+        Mixer.ApplyPreset = _session.ApplyPreset;
         _session.Changed += QueueRefresh;
         _session.Banner += msg => Dispatcher.InvokeAsync(() =>
             MessageBox.Show(msg, "RMS", MessageBoxButton.OK, MessageBoxImage.Information));
@@ -178,7 +193,7 @@ public partial class MainWindow : Window
     {
         _syncing = true;
         var project = _session.Project;
-        var busy = _session.Loading;
+        var busy = _session.Loading || _exporting;
         StatusText.Text = _session.Status;
         SongName.Text = project == null ? "No song yet" : project.Name;
         Title = project == null ? "RMS" : project.Name + (project.Dirty ? " •" : "") + " — RMS";
@@ -196,7 +211,7 @@ public partial class MainWindow : Window
         var showBanner = busy || _session.Problem != null;
         Banner.Visibility = showBanner ? Visibility.Visible : Visibility.Collapsed;
         BannerText.Text = busy
-            ? "Opening your song…"
+            ? (_exporting ? "Exporting audio…" : "Opening your song…")
             : _session.Problem ?? "";
         EmptyText.Visibility = !busy && project != null && StudioSong.LooksEmpty(project) && _session.Problem == null
             ? Visibility.Visible
@@ -212,13 +227,44 @@ public partial class MainWindow : Window
         SaveButton.IsEnabled = enabled;
         OpenButton.IsEnabled = !busy;
         VolumeSlider.IsEnabled = enabled;
-        RecordButton.IsEnabled = enabled;
-        RecordButton.Content = _session.Engine.IsRecording || _session.Engine.IsCountingIn
-            ? "Stop recording"
-            : "Record my voice";
+
         RecordButton.Background = _session.Engine.IsRecording ? Recording : Paper;
         RecordButton.Foreground = _session.Engine.IsRecording ? Paper : Ink;
 
+        var activeTake = _session.Engine.IsTakeActive;
+        InputMeter.Level = _session.InputPeak;
+        InputMeter.IsClipping = _session.InputPeak >= 0.99f;
+        OutputMeter.Level = _session.OutputPeak;
+        OutputMeter.IsClipping = _session.OutputPeak >= 0.99f;
+        RecordingState.Text = _session.Engine.IsCountingIn ? "Count-in · get ready"
+            : _session.Engine.IsRecording ? "● Recording" : activeTake ? "Saving take…" : "";
+        RecordingState.Foreground = Recording;
+        var armed = project?.Tracks.FirstOrDefault(t => t.Armed);
+        ArmedText.Text = armed == null ? "No track armed" : "Armed: " + armed.Name;
+        RecordButton.Content = activeTake ? "Stop recording" : "Record";
+        RecordButton.IsEnabled = enabled && (armed != null || activeTake);
+        MicBox.IsEnabled = SpeakerBox.IsEnabled = !busy && !activeTake;
+        NewButton.IsEnabled = OpenButton.IsEnabled = !busy && !activeTake;
+        SaveAsButton.IsEnabled = enabled && !activeTake;
+        SaveButton.IsEnabled = enabled && !activeTake;
+        TrackTools.IsEnabled = EditTools.IsEnabled = enabled && !activeTake;
+        ExportTools.IsEnabled = enabled && !activeTake;
+        Mixer.IsEnabled = enabled && !activeTake;
+        Timeline.IsEnabled = enabled && !activeTake;
+        UndoButton.IsEnabled = _session.CanUndo;
+        RedoButton.IsEnabled = _session.CanRedo;
+        LoopButton.Content = project?.Loop.Enabled == true ? "Loop on" : "Loop off";
+        PunchButton.Content = project?.Punch.Enabled == true ? "Punch on" : "Punch off";
+        CompButton.Content = _session.CompMode ? "Choose takes: on" : "Choose takes";
+        Timeline.Project = project;
+        Timeline.SelectedClipId = _session.SelectedClipId;
+        Timeline.SelectedTrackId = _session.SelectedTrackId;
+        Timeline.CompMode = _session.CompMode;
+        Timeline.PixelsPerSecond = _session.Zoom;
+        Timeline.Playhead = _session.Engine.PlayheadFrames;
+        Timeline.LiveRecording = _session.Engine.IsRecording ? _session.Engine.GetRecordingWaveform() : null;
+        Timeline.InvalidateProject();
+        Mixer.SetProject(project, _session.SelectedTrackId);
         var playing = _session.Engine.IsSongPlaying;
         for (var i = 0; i < SongSketch.StepCount; i++)
             _lamps[i].Background = project != null && playing && i == _session.CurrentStep ? LampOn : LampOff;
@@ -264,11 +310,106 @@ public partial class MainWindow : Window
         _syncing = false;
     }
 
-    private void Play_Click(object sender, RoutedEventArgs e) => _session.PlayFromStart();
+    private void Play_Click(object sender, RoutedEventArgs e) => _session.PlayPause();
     private void Stop_Click(object sender, RoutedEventArgs e) => _session.StopSong();
     private void TempoDown_Click(object sender, RoutedEventArgs e) => _session.NudgeTempo(-4);
     private void TempoUp_Click(object sender, RoutedEventArgs e) => _session.NudgeTempo(4);
-    private void Record_Click(object sender, RoutedEventArgs e) => _session.RecordVoice();
+    private void Record_Click(object sender, RoutedEventArgs e)
+    {
+        if (_session.Engine.IsTakeActive) _session.StopSong();
+        else _session.Record();
+    }
+
+    private void Start_Click(object sender, RoutedEventArgs e) => _session.GoToStart();
+    private void Metronome_Click(object sender, RoutedEventArgs e) => _session.ToggleMetronome();
+    private void Arm_Click(object sender, RoutedEventArgs e) => _session.ArmSelectedTrack();
+    private void Import_Click(object sender, RoutedEventArgs e) => _session.BrowseAndImport();
+    private void Undo_Click(object sender, RoutedEventArgs e) => _session.Undo();
+    private void Redo_Click(object sender, RoutedEventArgs e) => _session.Redo();
+    private void Split_Click(object sender, RoutedEventArgs e) => _session.SplitSelected();
+    private void Delete_Click(object sender, RoutedEventArgs e) => _session.DeleteSelected();
+    private void Loop_Click(object sender, RoutedEventArgs e) => _session.ToggleLoop();
+    private void Punch_Click(object sender, RoutedEventArgs e) => _session.SetPunch(_session.Project?.Punch.Enabled != true);
+    private void Comp_Click(object sender, RoutedEventArgs e) { _session.CompMode = !_session.CompMode; Refresh(); }
+    private void ZoomOut_Click(object sender, RoutedEventArgs e) { _session.Zoom = Math.Max(8, _session.Zoom / 1.4); Refresh(); }
+    private void ZoomIn_Click(object sender, RoutedEventArgs e) { _session.Zoom = Math.Min(800, _session.Zoom * 1.4); Refresh(); }
+
+    private void AddTrack_Click(object sender, RoutedEventArgs e)
+    {
+        var name = TrackNameBox.Text.Trim();
+        if (name.Length == 0) name = TrackTypeBox.SelectedIndex == 0 ? "Voice" : TrackTypeBox.SelectedIndex == 1 ? "Guitar" : "Audio";
+        _session.AddRecordingTrack(name, TrackTypeBox.SelectedIndex == 0 ? TrackRole.Vocal : TrackRole.Audio);
+    }
+
+    private void New_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_session.CanSwitchSong()) return;
+        var dialog = new NewProjectWindow(null) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        try { _session.NewStudioSong(dialog.ProjectName, dialog.Folder, dialog.Tempo, dialog.Numerator, dialog.Denominator, dialog.SampleRate); }
+        catch (Exception ex) { MessageBox.Show(this, "Could not create the song: " + ex.Message, "RMS", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private void SaveAs_Click(object sender, RoutedEventArgs e)
+    {
+        var folder = _session.BrowseOpenProject("Choose an empty folder for a copy of this song");
+        if (folder == null) return;
+        try
+        {
+            if (Directory.EnumerateFileSystemEntries(folder).Any())
+            {
+                MessageBox.Show(this, "Choose an empty folder for this copy so existing files are not replaced.", "RMS");
+                return;
+            }
+            _session.SaveAs(folder);
+        }
+        catch (Exception ex) { MessageBox.Show(this, "Could not save a copy: " + ex.Message, "RMS", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private async void Export_Click(object sender, RoutedEventArgs e)
+    {
+        if (_exporting || _session.Project == null || _session.Engine.IsTakeActive) return;
+        var format = ExportFormatBox.SelectedIndex switch { 1 => ExportFormat.Wav24, 2 => ExportFormat.Mp3, _ => ExportFormat.Wav16 };
+        var scope = ExportScopeBox.SelectedIndex switch { 1 => ExportScope.SelectedRange, 2 => ExportScope.VocalStem, 3 => ExportScope.BackingStem, _ => ExportScope.WholeProject };
+        if (scope == ExportScope.SelectedRange && !_session.HasSelection)
+        {
+            _session.Tell("Drag across the timeline ruler to select the part you want to export.");
+            return;
+        }
+        var destination = _session.BrowseExport(format);
+        if (destination == null) return;
+        _session.StopSong();
+        _exporting = true;
+        ExportProgress.Visibility = Visibility.Visible;
+        Refresh();
+        try { await _session.ExportAsync(destination, format, scope); }
+        catch (Exception ex)
+        {
+            _session.Tell("Export failed: " + ex.Message);
+            MessageBox.Show(this, "Could not export audio: " + ex.Message, "RMS", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally { _exporting = false; ExportProgress.Visibility = Visibility.Collapsed; Refresh(); }
+    }
+
+    private void Audio_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = !_exporting && !_session.Loading && !_session.Engine.IsTakeActive &&
+            e.Data.GetData(DataFormats.FileDrop) is string[] paths &&
+            paths.Any(IsAudioFile) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void Audio_Drop(object sender, DragEventArgs e)
+    {
+        if (_exporting || _session.Loading || _session.Engine.IsTakeActive) return;
+        if (e.Data.GetData(DataFormats.FileDrop) is string[] paths)
+            foreach (var path in paths.Where(IsAudioFile)) _session.ImportAudio(path);
+        e.Handled = true;
+    }
+
+    private static bool IsAudioFile(string path) =>
+        string.Equals(Path.GetExtension(path), ".wav", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(Path.GetExtension(path), ".mp3", StringComparison.OrdinalIgnoreCase);
 
     private void Volume_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
@@ -324,12 +465,29 @@ public partial class MainWindow : Window
 
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Space && e.OriginalSource is not ComboBox && e.OriginalSource is not ComboBoxItem)
+        if (_exporting) return;
+        if (e.OriginalSource is TextBox || e.OriginalSource is System.Windows.Controls.Primitives.TextBoxBase) return;
+        if (e.Key == Key.Space && e.OriginalSource is not ComboBox && e.OriginalSource is not ComboBoxItem && e.OriginalSource is not Button)
         {
             if (_session.Engine.IsSongPlaying || _session.Engine.IsTakeActive)
                 _session.StopSong();
             else
-                _session.PlayFromStart();
+                _session.PlayPause();
+            e.Handled = true;
+        }
+        else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Z)
+        {
+            _session.Undo();
+            e.Handled = true;
+        }
+        else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Y)
+        {
+            _session.Redo();
+            e.Handled = true;
+        }
+        else if (Keyboard.Modifiers == ModifierKeys.None && e.Key == Key.R)
+        {
+            Record_Click(sender, e);
             e.Handled = true;
         }
         else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.S)
@@ -341,6 +499,12 @@ public partial class MainWindow : Window
 
     private async void OnClosing(object sender, System.ComponentModel.CancelEventArgs e)
     {
+        if (_exporting)
+        {
+            e.Cancel = true;
+            _session.Tell("Wait for the export to finish before closing RMS.");
+            return;
+        }
         if (_closeReady) return;
         e.Cancel = true;
         if (_closePending) return;

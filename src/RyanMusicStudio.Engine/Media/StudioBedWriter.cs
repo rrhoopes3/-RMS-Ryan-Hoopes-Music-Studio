@@ -12,7 +12,8 @@ public static class StudioBedWriter
         if (string.IsNullOrWhiteSpace(project.RootPath))
             throw new InvalidOperationException("The song folder is not set.");
 
-        var audio = StudioSynth.Render(project.Studio, project.SampleRate, project.TempoBpm);
+        var audio = StudioSynth.Render(project.Studio, project.SampleRate, project.TempoBpm,
+            project.TimeSignature.Numerator, project.TimeSignature.Denominator);
         var paths = new ProjectPaths(project.RootPath);
         paths.EnsureLayout();
         var absolute = Path.Combine(paths.Root, StudioSong.BedRelativePath.Replace('/', Path.DirectorySeparatorChar));

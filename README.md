@@ -1,6 +1,6 @@
 # RMS
 
-**Ryan Music Studio** is a Windows app for someone who wants to make a song without learning a studio program. One window. Press Play. Tap the drum boxes. Tap a piano key, then a melody box. Turn the volume up or down. Save. The beat and the melody are real audio.
+**Ryan Music Studio** is a Windows app for making a song in one window. Build a beat, import audio, record voice or instruments on separate tracks, mix them, and export a WAV or MP3.
 
 RMS runs on **Windows 11**, works **offline**, and needs **no account**. The song stays in your Music folder unless you copy it yourself.
 
@@ -8,7 +8,7 @@ RMS runs on **Windows 11**, works **offline**, and needs **no account**. The son
 
 If you already have **RMS.exe**, double-click it. No installer.
 
-The first time, RMS makes a song called **My Song** in your Music folder, under `Music\RMS\My Song`. Press **Save** any time. **Open** brings a saved song back.
+The first time, RMS makes a song called **My Song** in your Music folder, under `Music\RMS\My Song`. Use **New song** to choose a name, folder, tempo, meter, and sample rate. **Save** keeps the current song; **Save as** makes a copy in an empty folder. **Open** brings a saved song back.
 
 ## Build on Windows
 
@@ -37,26 +37,24 @@ dotnet test RyanMusicStudio.sln -c Release
 dotnet publish src\RyanMusicStudio.App\RyanMusicStudio.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o dist\RMS-portable
 ```
 
-## What the window does
+## Make a song
 
-- **Play** and **Stop**
-- **Tempo**
-- Where you are in the song (step and time)
-- **Drums**: kick, snare, and hat. Tap a box to turn that hit on. You hear it.
-- **Melody**: eight piano keys. Tap a key, then tap a box in the row under it.
-- **Volume** changes how loud the song is
-- **Save** and **Open**
-- **Record my voice** if a microphone is plugged in. That uses the same song file. It is not a separate screen.
+1. Choose your microphone and speakers. The input meter moves while recording, and the output meter moves during playback; red means the signal is too hot.
+2. Expand **Drums & melody** to tap a kick, snare, hat, or piano step. These make the built-in beat. The 16 boxes fill one bar in the chosen meter.
+3. Add a **Voice**, **Guitar**, or **Other** track, or import a WAV/MP3. Imported files get their own lane and are copied into the song folder without changing the originals. You can also drop audio files onto the window.
+4. Click a lane, then **Arm selected** to choose where the next recording goes. Press **Record** and **Stop**. Earlier takes remain in their own lanes; the waveform grows as the new take is saved. The built-in beat repeats under longer recordings while the timeline advances.
+5. Use the mixer beside the timeline to set track gain and pan, mute or solo tracks, and choose a vocal preset. Click the ruler to seek; drag on it to mark a range. You can move an imported clip, split or delete a selection, undo/redo, and zoom. **Choose takes** lets you drag across recorded passes to keep the best parts.
+6. Choose a WAV or MP3 format and **Export audio**. Export the full mix, a marked range, or a vocal/backing stem. The click track and reference tracks stay out of the file.
 
-If the song has no drums and no melody, RMS says so. If a song folder cannot be opened, or speakers are missing, the message says what to do next.
+If a song cannot open or an audio device disappears, RMS shows a recovery message. Finished takes remain in the song folder if saving is interrupted.
 
 ## Keyboard
 
-Space plays or stops. Ctrl+S saves.
+Space plays or stops, **R** starts or stops recording, **Ctrl+S** saves, **Ctrl+Z** undoes, and **Ctrl+Y** redoes. In the timeline, the wheel scrolls tracks, Shift+wheel scrolls time, and Ctrl+wheel zooms.
 
-## What this version does not do
+## Current limits
 
-MIDI, plugins, pitch correction, a mixer full of knobs, and a separate export page are not in this window. Older recording tools are still in the project for the voice button. They are not separate screens.
+The built-in beat remains a 16-step pattern with eight melody keys. MIDI instruments, plugins, pitch correction, detailed mastering, and cloud collaboration are later work. The [studio shortlist plan](docs/STUDIO-SHORTLIST-PLAN.md) records this pass and its acceptance checks.
 
 ## License and credits
 

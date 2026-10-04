@@ -46,6 +46,7 @@ public sealed class AudioEngine : IDisposable
     private readonly float[] _monitorScratch = new float[16384 * 6 + 2];
     private readonly StreamResampler _monitorResampler = new(); // capture thread
     private readonly StreamResampler _takeResampler = new();    // writer thread
+    private RecordingWaveform? _recordingWaveform;
     private long _lastTickPlayhead;
 
     private EngineConfig _config = new();
@@ -109,6 +110,9 @@ public sealed class AudioEngine : IDisposable
 
     public long ReportedCompensationFrames { get; private set; }
 
+    /// <summary>Project-rate waveform of the current/last take. Poll on the UI timer while recording.</summary>
+    public RecordingWaveformSnapshot? GetRecordingWaveform() => Volatile.Read(ref _recordingWaveform)?.Snapshot();
+
     public AudioEngine()
     {
         _watcher.DeviceLost += OnDeviceLost;
@@ -133,6 +137,7 @@ public sealed class AudioEngine : IDisposable
 
     public void AttachProject(ProjectDocument project)
     {
+        Volatile.Write(ref _recordingWaveform, null);
         _project = project;
         _cache.PreloadProject(project);
         EnsureMixer(project.SampleRate);
@@ -230,6 +235,7 @@ public sealed class AudioEngine : IDisposable
             playhead = Math.Max(0, playhead);
 
         SeekInternal(playhead);
+        Volatile.Write(ref _recordingWaveform, null);
         _stopRequested = false;
         _takeActive = true;
         _countInRemaining = _project.CountInBars * bar;
@@ -475,7 +481,11 @@ public sealed class AudioEngine : IDisposable
                     : _mixer?.PlayheadFrames ?? _recordStartPlayhead;
                 _takeResampler.Reset();
                 var ring = _captureRing;
-                _writerTask = Task.Run(() => WriterLoop(ring, writer, cts.Token));
+                var waveform = new RecordingWaveform(_armedTrack.Id,
+                    project.Punch.Enabled ? project.Punch.StartFrame : Math.Max(0, _recordStartPlayhead - ReportedCompensationFrames),
+                    project.SampleRate);
+                Volatile.Write(ref _recordingWaveform, waveform);
+                _writerTask = Task.Run(() => WriterLoop(ring, writer, waveform, cts.Token));
                 _rollCapture = false;
                 _recording = true;
             }
@@ -582,7 +592,7 @@ public sealed class AudioEngine : IDisposable
         }
     }
 
-    private void WriterLoop(FloatRingBuffer ring, IncrementalWavWriter writer, CancellationToken token)
+    private void WriterLoop(FloatRingBuffer ring, IncrementalWavWriter writer, RecordingWaveform waveform, CancellationToken token)
     {
         var buf = new float[2048];
         // The ring already holds mono at the mic's rate; leave room to upsample a full read
@@ -608,6 +618,7 @@ public sealed class AudioEngine : IDisposable
             }
 
             writer.WriteInterleavedFloat(mono.AsSpan(0, frames));
+            waveform.Append(mono.AsSpan(0, frames));
         }
         writer.Flush();
     }

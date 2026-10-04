@@ -301,6 +301,33 @@ public sealed class SessionController : IDisposable
         !BusyRecording("Stop recording first (press R or Space), then switch songs.") &&
         !TakeSaveFailed();
 
+    public void NewStudioSong(string name, string parentFolder, double tempo, int num, int den, int sampleRate)
+    {
+        if (!CanSwitchSong()) return;
+        var requestedName = name.Trim();
+        name = requestedName;
+        var root = Path.Combine(parentFolder, Sanitize(requestedName));
+        var project = ProjectFactory.CreateStudioSong(requestedName, root, tempo, sampleRate);
+        if (num < 1 || num > 32 || den is not (1 or 2 or 4 or 8 or 16 or 32))
+            throw new ArgumentException("Choose a valid time signature.");
+        project.TimeSignature = new TimeSignature { Numerator = num, Denominator = den };
+        if (!LeaveProject()) return;
+        for (var n = 2; Directory.Exists(root) || File.Exists(root); n++)
+        {
+            name = $"{requestedName} ({n})";
+            root = Path.Combine(parentFolder, Sanitize(name));
+        }
+        project.Name = name;
+        project.RootPath = root;
+        VocalPresets.Apply(project.Tracks.First(t => t.Role == TrackRole.Vocal), VocalPresets.Clean);
+        StudioBedWriter.Write(project);
+        project.Loop.Enabled = false;
+        _store.Save(project);
+        OpenLoaded(project);
+        SetStatus($"{project.Name} is ready. Build a beat, import audio, or record on the Voice track.");
+        Go(_settings.AudioSetupConfirmed ? StudioPlace.Arrange : StudioPlace.Setup);
+    }
+
     public void NewVocalSession(string name, string parentFolder, double tempo, int num, int den, int sampleRate)
     {
         if (!CanSwitchSong() || !LeaveProject()) return;
@@ -421,6 +448,8 @@ public sealed class SessionController : IDisposable
             return;
         }
         SetStatus($"{Path.GetFileName(path)} copied onto {target.Name}. The original file was left untouched.");
+        SelectedTrackId = target.Id;
+        SelectedClipId = target.Clips.LastOrDefault()?.Id;
         Raise();
     }
 
@@ -552,13 +581,11 @@ public sealed class SessionController : IDisposable
 
     public void NudgeTempo(int delta)
     {
-        if (Project == null) return;
+        if (Project == null || BusyRecording("Stop recording first, then change the tempo.")) return;
         var next = Math.Clamp(Math.Round(Project.TempoBpm + delta), 60, 180);
         if (Math.Abs(next - Project.TempoBpm) < 0.1) return;
         Project.TempoBpm = next;
-        _engine.RefreshStudioBed();
-        if (_engine.PlayheadFrames >= Project.Loop.EndFrame)
-            _engine.SetPlayhead(0);
+        RefreshStudioBedPreservingLoop();
         SetStatus("Tempo is " + (int)next + ".");
     }
 
@@ -577,7 +604,7 @@ public sealed class SessionController : IDisposable
     {
         if (Project == null) return;
         var on = Project.Studio.ToggleDrum(voice, step);
-        _engine.RefreshStudioBed();
+        RefreshStudioBedPreservingLoop();
         var name = voice switch
         {
             DrumVoice.Kick => "Kick",
@@ -620,7 +647,7 @@ public sealed class SessionController : IDisposable
     {
         if (Project == null) return;
         Project.Studio.SetMelody(step, MelodyPen);
-        _engine.RefreshStudioBed();
+        RefreshStudioBedPreservingLoop();
         var name = SongSketch.NoteName(Project.Studio.Melody[Math.Clamp(step, 0, SongSketch.StepCount - 1)]);
         Problem = null;
         SetStatus(string.IsNullOrEmpty(name)
@@ -643,7 +670,8 @@ public sealed class SessionController : IDisposable
 
     public int CurrentStep => Project == null
         ? 0
-        : StudioSong.StepAt(Project.SampleRate, Project.TempoBpm, _engine.PlayheadFrames);
+        : StudioSong.StepAt(Project.SampleRate, Project.TempoBpm, _engine.PlayheadFrames,
+            Project.TimeSignature.Numerator, Project.TimeSignature.Denominator);
 
     public static string DefaultSongFolder()
     {
@@ -653,18 +681,22 @@ public sealed class SessionController : IDisposable
         return Path.Combine(music, "RMS", "My Song");
     }
 
-    private void PrepareStudioRecord()
-    {
-        if (Project == null || !StudioSong.HasBed(Project)) return;
-        StudioSong.ArmBeatLoop(Project);
-        _engine.NotifyProjectChanged();
-        _engine.SetPlayhead(0);
-    }
-
     private void RestoreStudioAfterRecord()
     {
         if (Project == null || !StudioSong.HasBed(Project)) return;
-        _engine.RefreshStudioBed();
+        RefreshStudioBedPreservingLoop();
+    }
+
+    private void RefreshStudioBedPreservingLoop()
+    {
+        if (Project == null) return;
+        var loop = (Project.Loop.Enabled, Project.Loop.StartFrame, Project.Loop.EndFrame);
+        try { _engine.RefreshStudioBed(); }
+        finally
+        {
+            (Project.Loop.Enabled, Project.Loop.StartFrame, Project.Loop.EndFrame) = loop;
+            _engine.NotifyProjectChanged();
+        }
     }
 
     private void EnsureStudioAudio()
@@ -674,12 +706,12 @@ public sealed class SessionController : IDisposable
         var referenced = StudioSong.HasBed(Project);
         if (!referenced && Project.Studio.IsEmpty) return;
         if (!referenced || !File.Exists(absolute))
-            _engine.RefreshStudioBed();
+            RefreshStudioBedPreservingLoop();
         else
         {
             StudioSong.ApplyVolume(Project, touch: false);
             if (StudioSong.NeedsFit(Project))
-                StudioSong.Place(Project, StudioSong.BarFrames(Project.SampleRate, Project.TempoBpm));
+                RefreshStudioBedPreservingLoop();
             _engine.NotifyProjectChanged();
         }
     }
@@ -743,8 +775,15 @@ public sealed class SessionController : IDisposable
             SetStatus("Wait for the test take to finish, then press R.");
             return;
         }
-        PrepareStudioRecord();
-        var armed = Project.Tracks.FirstOrDefault(t => t.Armed) ?? Project.Tracks.FirstOrDefault(t => t.Role == TrackRole.Vocal);
+        if (TakeSaveFailed()) return;
+        var armed = ProjectFactory.RecordingTarget(Project, SelectedTrackId);
+        if (armed == null)
+        {
+            SetStatus("Select a voice or instrument track and arm it before recording. Use Add track if you need a new lane.");
+            return;
+        }
+        ArmOnly(armed);
+        SelectedTrackId = armed.Id;
         _heardBeforeTake = armed?.AuditionTakeId;
         try
         {
@@ -856,12 +895,22 @@ public sealed class SessionController : IDisposable
         Raise();
     }
 
+    /// <summary>Selects a lane, optionally making it the recording target.</summary>
+    public void SelectTrack(string trackId, bool arm = false)
+    {
+        if (Project?.Tracks.Any(t => t.Id == trackId) != true) return;
+        SelectedTrackId = trackId;
+        SelectedClipId = null;
+        if (arm) ArmSelectedTrack();
+        Raise();
+    }
+
     /// <summary>Makes the selected track the one that R records into.</summary>
     public void ArmSelectedTrack()
     {
         var track = SelectedTrack();
         if (Project == null || track == null || BusyRecording("Stop recording first, then switch tracks.")) return;
-        if (track.Clips.Count > 0 || track.Role == TrackRole.Backing)
+        if (!ProjectFactory.CanRecordInto(track))
         {
             // A take on a track with imported audio would replace that audio in playback.
             SetStatus($"{track.Name} is for imported audio. Use Add track to make a guitar or vocal track to record into.");
@@ -869,6 +918,7 @@ public sealed class SessionController : IDisposable
         }
         Remember();
         ArmOnly(track);
+        _engine.NotifyProjectChanged();
         SetStatus($"R now records into {track.Name}.");
         Raise();
     }
@@ -882,6 +932,12 @@ public sealed class SessionController : IDisposable
             return;
         }
         if (BusyRecording("Stop recording first, then add a track.")) return;
+        if (role is not (TrackRole.Audio or TrackRole.Vocal))
+        {
+            SetStatus("Choose a voice or instrument track for recording.");
+            return;
+        }
+        baseName = string.IsNullOrWhiteSpace(baseName) ? (role == TrackRole.Vocal ? "Voice" : "Instrument") : baseName.Trim();
         Remember();
         var name = NextTrackName(baseName);
         var track = ProjectFactory.CreateAudioTrack(Project, name, role, TrackChannelLayout.Mono);
@@ -889,6 +945,7 @@ public sealed class SessionController : IDisposable
             VocalPresets.Apply(track, VocalPresets.Clean);
         ArmOnly(track);
         SelectedTrackId = track.Id;
+        SelectedClipId = null;
         _engine.NotifyProjectChanged();
         SetStatus($"{name} track added. Press R to record into it.");
         Raise();
@@ -1074,14 +1131,12 @@ public sealed class SessionController : IDisposable
         var take = result.Take;
         var track = Project?.Tracks.FirstOrDefault(t => t.Takes.Contains(take));
         if (Project == null || track == null) return;
-        if (StudioSong.HasBed(Project))
-        {
-            RestoreStudioAfterRecord();
-            SetStatus(take.Name + " is saved. Press Play to hear it with the beat.");
-            Raise();
-            return;
-        }
-        var looping = Project.Loop.Enabled && Project.Loop.EndFrame > Project.Loop.StartFrame;
+        // Older studio songs start with a one-bar beat preview loop. It is not a
+        // request to replace only that bar when recording a longer performance.
+        var beatPreviewLoop = StudioSong.HasBed(Project) && !HasSelection &&
+            Project.Loop.StartFrame == 0 &&
+            Project.Loop.EndFrame == StudioSong.BarFrames(Project);
+        var looping = Project.Loop.Enabled && Project.Loop.EndFrame > Project.Loop.StartFrame && !beatPreviewLoop;
         var partial = Project.Punch.Enabled || looping;
         if (track.Takes.Count > 1 && (partial || track.Comp.Regions.Count > 0))
         {
@@ -1326,6 +1381,7 @@ public sealed class SessionController : IDisposable
         _engine.AttachProject(project);
         _settings.RememberProject(project.Name, project.RootPath);
         SelectedTrackId = project.Tracks.FirstOrDefault(t => t.Armed)?.Id;
+        SelectedClipId = null;
         SetStatus("Opened " + project.Name);
         Go(StudioPlace.Arrange);
     }
