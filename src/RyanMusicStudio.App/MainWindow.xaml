@@ -96,6 +96,12 @@
             <Setter Property="FontSize" Value="26"/>
             <Setter Property="Padding" Value="0"/>
         </Style>
+        <Style x:Key="DeviceBox" TargetType="ComboBox">
+            <Setter Property="MinHeight" Value="44"/>
+            <Setter Property="FontSize" Value="16"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
     </Window.Resources>
 
     <Grid>
@@ -158,8 +164,26 @@
                 <TextBlock x:Name="EmptyText" TextWrapping="Wrap" Margin="0,14,0,0" Foreground="#5C6B72"
                            Text="This song is quiet. Tap the drum boxes or piano keys, then press Play."/>
 
+                <Grid Margin="0,22,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="92"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="24"/>
+                        <ColumnDefinition Width="92"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Microphone" VerticalAlignment="Center" FontSize="16"/>
+                    <ComboBox x:Name="MicBox" Grid.Column="1" Style="{StaticResource DeviceBox}"
+                              DisplayMemberPath="Name" SelectedValuePath="Id"
+                              SelectionChanged="Mic_Changed" AutomationProperties.Name="Microphone"/>
+                    <TextBlock Grid.Column="3" Text="Speakers" VerticalAlignment="Center" FontSize="16"/>
+                    <ComboBox x:Name="SpeakerBox" Grid.Column="4" Style="{StaticResource DeviceBox}"
+                              DisplayMemberPath="Name" SelectedValuePath="Id"
+                              SelectionChanged="Speaker_Changed" AutomationProperties.Name="Speakers"/>
+                </Grid>
+
                 <Button x:Name="RecordButton" Content="Record my voice" Style="{StaticResource QuietButton}"
-                        HorizontalAlignment="Left" MinWidth="260" MinHeight="64" Margin="0,22,0,0"
+                        HorizontalAlignment="Left" MinWidth="260" MinHeight="64" Margin="0,16,0,0"
                         Click="Record_Click" AutomationProperties.Name="Record my voice"/>
             </StackPanel>
         </ScrollViewer>

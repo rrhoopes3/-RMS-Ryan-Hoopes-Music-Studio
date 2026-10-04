@@ -62,7 +62,7 @@ public sealed class DeviceWatcher : IMMNotificationClient, IDisposable
                 DeviceName = "Microphone",
                 WasInput = true,
                 RecoveryMessage =
-                    $"The microphone {why}. Recording stopped. Your finished takes are still saved. Plug the mic back in, choose it again on Audio Setup, then press Record another take."
+                    $"The microphone {why}. Recording stopped. Your finished takes are still saved. Plug the mic back in, choose it again from the Microphone list, then press Record another take."
             });
         }
         else if (string.Equals(deviceId, _outputId, StringComparison.OrdinalIgnoreCase))
@@ -72,7 +72,7 @@ public sealed class DeviceWatcher : IMMNotificationClient, IDisposable
                 DeviceName = "Headphones / speakers",
                 WasInput = false,
                 RecoveryMessage =
-                    $"The headphone output {why}. Playback stopped so the song would not jump to a different device. Choose your headphones again on Audio Setup."
+                    $"The headphone output {why}. Playback stopped so the song would not jump to a different device. Choose your headphones again from the Speakers list."
             });
         }
     }

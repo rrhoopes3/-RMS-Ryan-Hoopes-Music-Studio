@@ -5,7 +5,9 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using RyanMusicStudio.Core.Model;
+using RyanMusicStudio.Core.Studio;
 using RyanMusicStudio.Core.Timeline;
+using RyanMusicStudio.Engine.Devices;
 
 namespace RyanMusicStudio.App;
 
@@ -196,9 +198,13 @@ public partial class MainWindow : Window
         BannerText.Text = busy
             ? "Opening your song…"
             : _session.Problem ?? "";
-        EmptyText.Visibility = !busy && project is { Studio.IsEmpty: true } && _session.Problem == null
+        EmptyText.Visibility = !busy && project != null && StudioSong.LooksEmpty(project) && _session.Problem == null
             ? Visibility.Visible
             : Visibility.Collapsed;
+        FillDeviceBox(MicBox, _session.Inputs, _session.SelectedInput?.Id);
+        FillDeviceBox(SpeakerBox, _session.Outputs, _session.SelectedOutput?.Id);
+        MicBox.IsEnabled = !busy;
+        SpeakerBox.IsEnabled = !busy;
 
         var enabled = !busy && project != null;
         PlayButton.IsEnabled = enabled;
@@ -279,9 +285,46 @@ public partial class MainWindow : Window
             _session.OpenSongFolder(folder);
     }
 
+    private void Mic_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncing || MicBox.SelectedValue is not string id) return;
+        var device = _session.Inputs.FirstOrDefault(d => d.Id == id);
+        if (device != null)
+            _session.ChooseInput(device);
+    }
+
+    private void Speaker_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncing || SpeakerBox.SelectedValue is not string id) return;
+        var device = _session.Outputs.FirstOrDefault(d => d.Id == id);
+        if (device != null)
+            _session.ChooseOutput(device);
+    }
+
+    private void FillDeviceBox(ComboBox box, IReadOnlyList<AudioDeviceInfo> devices, string? selectedId)
+    {
+        var same = box.Items.Count == devices.Count;
+        if (same)
+        {
+            for (var i = 0; i < devices.Count; i++)
+            {
+                if (box.Items[i] is not AudioDeviceInfo item || item.Id != devices[i].Id)
+                {
+                    same = false;
+                    break;
+                }
+            }
+        }
+
+        if (!same)
+            box.ItemsSource = devices;
+        if ((string?)box.SelectedValue != selectedId)
+            box.SelectedValue = selectedId;
+    }
+
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Space)
+        if (e.Key == Key.Space && e.OriginalSource is not ComboBox && e.OriginalSource is not ComboBoxItem)
         {
             if (_session.Engine.IsSongPlaying || _session.Engine.IsTakeActive)
                 _session.StopSong();

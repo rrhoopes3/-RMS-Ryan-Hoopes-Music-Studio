@@ -184,7 +184,7 @@ public sealed class SessionController : IDisposable
         if (SelectedOutput == null && !string.IsNullOrEmpty(_settings.OutputDeviceId)) missing.Add("headphones");
         if (missing.Count == 0) return false;
         _devicesMissing = true;
-        SetStatus($"Your chosen {string.Join(" and ", missing)} isn't plugged in. Plug it back in, or pick another on Audio Setup.");
+        SetStatus($"Your chosen {string.Join(" and ", missing)} isn't plugged in. Plug it back in, or pick another from the Microphone or Speakers list.");
         return true;
     }
 
@@ -527,9 +527,9 @@ public sealed class SessionController : IDisposable
             _engine.SetPlayhead(0);
             _engine.Play();
             Problem = null;
-            SetStatus(Project.Studio.IsEmpty
-                ? "This song is quiet. Tap the drum boxes or piano keys, then press Play."
-                : "Playing.");
+        SetStatus(StudioSong.LooksEmpty(Project)
+            ? "This song is quiet. Tap the drum boxes or piano keys, then press Play."
+            : "Playing.");
         }
         catch (Exception)
         {
@@ -544,7 +544,7 @@ public sealed class SessionController : IDisposable
         Stop();
         if (!wasRecording)
             _engine.SetPlayhead(0);
-        if (Project?.Studio.IsEmpty == true)
+        if (Project != null && StudioSong.LooksEmpty(Project))
             SetStatus("Stopped. This song is quiet. Tap the drum boxes or piano keys, then press Play.");
         else if (!wasRecording)
             SetStatus("Stopped.");
@@ -653,17 +653,33 @@ public sealed class SessionController : IDisposable
         return Path.Combine(music, "RMS", "My Song");
     }
 
+    private void PrepareStudioRecord()
+    {
+        if (Project == null || !StudioSong.HasBed(Project)) return;
+        StudioSong.ArmBeatLoop(Project);
+        _engine.NotifyProjectChanged();
+        _engine.SetPlayhead(0);
+    }
+
+    private void RestoreStudioAfterRecord()
+    {
+        if (Project == null || !StudioSong.HasBed(Project)) return;
+        _engine.RefreshStudioBed();
+    }
+
     private void EnsureStudioAudio()
     {
         if (Project == null) return;
         var absolute = Path.Combine(Project.RootPath, StudioSong.BedRelativePath.Replace('/', Path.DirectorySeparatorChar));
-        var referenced = Project.Media.Any(m => m.Id == StudioSong.BedMediaId);
-        if (!referenced) return;
-        if (!File.Exists(absolute))
+        var referenced = StudioSong.HasBed(Project);
+        if (!referenced && Project.Studio.IsEmpty) return;
+        if (!referenced || !File.Exists(absolute))
             _engine.RefreshStudioBed();
         else
         {
-            Project.Master.GainDb = Project.Studio.VolumeDb;
+            StudioSong.ApplyVolume(Project, touch: false);
+            if (StudioSong.NeedsFit(Project))
+                StudioSong.Place(Project, StudioSong.BarFrames(Project.SampleRate, Project.TempoBpm));
             _engine.NotifyProjectChanged();
         }
     }
@@ -676,7 +692,7 @@ public sealed class SessionController : IDisposable
             SetStatus(NoSongMessage);
             return;
         }
-        SetStatus(Project.Studio.IsEmpty
+        SetStatus(StudioSong.LooksEmpty(Project)
             ? "This song is quiet. Tap the drum boxes or piano keys, then press Play."
             : "Press Play to hear your song.");
     }
@@ -727,6 +743,7 @@ public sealed class SessionController : IDisposable
             SetStatus("Wait for the test take to finish, then press R.");
             return;
         }
+        PrepareStudioRecord();
         var armed = Project.Tracks.FirstOrDefault(t => t.Armed) ?? Project.Tracks.FirstOrDefault(t => t.Role == TrackRole.Vocal);
         _heardBeforeTake = armed?.AuditionTakeId;
         try
@@ -736,7 +753,8 @@ public sealed class SessionController : IDisposable
         catch (Exception)
         {
             Stop();
-            SetStatus("RMS can't hear a microphone. Plug one in, then press Record my voice again.");
+            RestoreStudioAfterRecord();
+            SetStatus("RMS can't hear a microphone. Plug one in, or choose it from the Microphone list, then press Record my voice again.");
             return;
         }
         // The engine adds the take when recording stops; this snapshot lets Ctrl+Z remove that
@@ -775,7 +793,10 @@ public sealed class SessionController : IDisposable
         finally
         {
             if (!_shuttingDown)
+            {
                 _engine.SetInputPreview(Place == StudioPlace.Setup);
+                RestoreStudioAfterRecord();
+            }
         }
     }
 
@@ -1053,6 +1074,13 @@ public sealed class SessionController : IDisposable
         var take = result.Take;
         var track = Project?.Tracks.FirstOrDefault(t => t.Takes.Contains(take));
         if (Project == null || track == null) return;
+        if (StudioSong.HasBed(Project))
+        {
+            RestoreStudioAfterRecord();
+            SetStatus(take.Name + " is saved. Press Play to hear it with the beat.");
+            Raise();
+            return;
+        }
         var looping = Project.Loop.Enabled && Project.Loop.EndFrame > Project.Loop.StartFrame;
         var partial = Project.Punch.Enabled || looping;
         if (track.Takes.Count > 1 && (partial || track.Comp.Regions.Count > 0))

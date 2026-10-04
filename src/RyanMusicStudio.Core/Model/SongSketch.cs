@@ -16,7 +16,7 @@ public enum DrumVoice
 public sealed class SongSketch
 {
     public const int StepCount = 16;
-    public static readonly string[] NoteNames = ["C", "D", "E", "F", "G", "A", "B", "C"];
+    public static readonly string[] NoteNames = ["C", "D", "E", "F", "G", "A", "B", "High C"];
 
     public List<bool> Kick { get; set; } = EmptyRow();
     public List<bool> Snare { get; set; } = EmptyRow();

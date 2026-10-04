@@ -49,21 +49,118 @@ public class StudioSoundTests
     }
 
     [Fact]
-    public void Volume_changes_the_level()
+    public void Volume_lives_on_the_master_not_in_the_wav()
     {
         var loud = new SongSketch { VolumePercent = 100 };
         loud.Kick[0] = true;
-        var mid = new SongSketch { VolumePercent = 50 };
-        mid.Kick[0] = true;
         var mute = new SongSketch { VolumePercent = 0 };
         mute.Kick[0] = true;
-
         var step = StepFrames(48000, 100);
         var loudRms = Rms(StudioSynth.Render(loud, 48000, 100), 0, step);
-        var midRms = Rms(StudioSynth.Render(mid, 48000, 100), 0, step);
+        var muteRms = Rms(StudioSynth.Render(mute, 48000, 100), 0, step);
         Assert.True(loudRms > 0.05);
-        Assert.InRange(loudRms / midRms, 1.8, 2.2);
-        Assert.True(Peak(StudioSynth.Render(mute, 48000, 100)) < 0.00001);
+        Assert.InRange(muteRms / loudRms, 0.8, 1.2);
+
+        var mid = new SongSketch { VolumePercent = 50 };
+        Assert.InRange(mid.VolumeDb, -6.5, -5.5);
+        var project = ProjectFactory.CreateStudioSong("Vol",
+            Path.Combine(Path.GetTempPath(), "rms-vol-" + Guid.NewGuid().ToString("N")), 100);
+        project.Studio.VolumePercent = 50;
+        StudioSong.ApplyVolume(project);
+        Assert.InRange(project.Master.GainDb, -6.5, -5.5);
+        Assert.InRange(project.Master.GainDb / mid.VolumeDb, 0.99, 1.01);
+    }
+
+    [Fact]
+    public void Last_step_kick_wraps_into_the_start_of_the_bar()
+    {
+        var sketch = new SongSketch { VolumePercent = 100 };
+        sketch.Kick[15] = true;
+        var audio = StudioSynth.Render(sketch, 48000, 100);
+        var step = StepFrames(48000, 100);
+        Assert.True(Rms(audio, step * 15, step) > 0.05);
+        Assert.True(Rms(audio, 0, 400) > 0.01);
+    }
+
+    [Fact]
+    public void High_C_is_not_labeled_the_same_as_low_C()
+    {
+        Assert.Equal("C", SongSketch.NoteName(0));
+        Assert.Equal("High C", SongSketch.NoteName(7));
+        Assert.NotEqual(SongSketch.NoteNames[0], SongSketch.NoteNames[7]);
+    }
+
+    [Fact]
+    public void A_long_vocal_tiles_the_beat_and_opens_the_loop()
+    {
+        var project = ProjectFactory.CreateStudioSong("Long",
+            Path.Combine(Path.GetTempPath(), "rms-long-" + Guid.NewGuid().ToString("N")), 100, 48000);
+        var bar = StudioSong.BarFrames(48000, 100);
+        StudioSong.Place(project, bar);
+        Assert.False(StudioSong.StopTakeAtLoopWrap(project));
+        Assert.Equal(bar, project.Loop.EndFrame);
+        Assert.Single(StudioSong.FindOrCreateBeatTrack(project).Clips, StudioSong.IsBedClip);
+
+        project.Tracks.Single(t => t.Role == TrackRole.Vocal).Takes.Add(new Take
+        {
+            StartFrame = 0,
+            LengthFrames = bar * 3 + 100
+        });
+        Assert.True(StudioSong.NeedsFit(project));
+        StudioSong.Place(project, bar);
+        var beds = StudioSong.FindOrCreateBeatTrack(project).Clips
+            .Where(StudioSong.IsBedClip).OrderBy(c => c.StartFrame).ToList();
+        Assert.Equal(4, beds.Count);
+        Assert.Equal(bar * 4, project.Loop.EndFrame);
+        Assert.Equal(0, beds[0].StartFrame);
+        Assert.Equal(bar * 3, beds[3].StartFrame);
+        Assert.False(StudioSong.NeedsFit(project));
+        Assert.False(StudioSong.LooksEmpty(project));
+
+        StudioSong.ArmBeatLoop(project);
+        Assert.Equal(bar, project.Loop.EndFrame);
+        Assert.False(StudioSong.StopTakeAtLoopWrap(project));
+    }
+
+    [Fact]
+    public void Studio_loop_does_not_stop_a_take_the_way_an_old_arrange_loop_does()
+    {
+        var studio = ProjectFactory.CreateStudioSong("S",
+            Path.Combine(Path.GetTempPath(), "rms-s-" + Guid.NewGuid().ToString("N")), 100);
+        StudioSong.Place(studio, 1000);
+        Assert.True(StudioSong.HasBed(studio));
+        Assert.False(StudioSong.StopTakeAtLoopWrap(studio));
+
+        var old = ProjectFactory.CreateVocalOverBeat("Old",
+            Path.Combine(Path.GetTempPath(), "rms-o-" + Guid.NewGuid().ToString("N")), 90, 4, 4, 48000);
+        old.Loop.Enabled = true;
+        old.Loop.EndFrame = 8000;
+        Assert.False(StudioSong.HasBed(old));
+        Assert.True(StudioSong.StopTakeAtLoopWrap(old));
+    }
+
+    [Fact]
+    public void Imported_backing_keeps_its_clip_when_a_studio_beat_is_placed()
+    {
+        var project = ProjectFactory.CreateVocalOverBeat("Old",
+            Path.Combine(Path.GetTempPath(), "rms-imp-" + Guid.NewGuid().ToString("N")), 90, 4, 4, 48000);
+        var backing = project.Tracks.Single(t => t.Role == TrackRole.Backing);
+        backing.Clips.Add(new AudioClip { Id = "old-beat", MediaId = "imported", LengthFrames = 20000 });
+        Assert.False(StudioSong.LooksEmpty(project));
+        StudioSong.Place(project, 1000);
+        Assert.Contains(backing.Clips, c => c.MediaId == "imported");
+        var beat = project.Tracks.Single(t => t.Clips.Any(StudioSong.IsBedClip));
+        Assert.NotEqual(backing.Id, beat.Id);
+        Assert.False(StudioSong.LooksEmpty(project));
+    }
+
+    [Fact]
+    public void Empty_new_studio_song_is_the_quiet_banner()
+    {
+        var project = ProjectFactory.CreateStudioSong("New",
+            Path.Combine(Path.GetTempPath(), "rms-n-" + Guid.NewGuid().ToString("N")), 100);
+        StudioSong.Place(project, 1000);
+        Assert.True(StudioSong.LooksEmpty(project));
     }
 
     [Fact]

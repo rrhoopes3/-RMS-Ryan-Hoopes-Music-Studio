@@ -362,9 +362,10 @@ public sealed class AudioEngine : IDisposable
                 _loopPassPending = true;
                 _ = RollLoopTakeAsync();
             }
-            else if (_project.Loop.Enabled && !_project.LoopRecording && wrapped)
+            else if (StudioSong.StopTakeAtLoopWrap(_project) && wrapped)
             {
-                // The backing jumped back to the loop start; one take running on would be out of time.
+                // Arrange-page loop: the backing jumped back, so one take running on would be out of time.
+                // A studio bed keeps recording; the beat is supposed to wrap under the vocal.
                 _ = StopAtLoopEndAsync();
             }
         }
@@ -663,7 +664,7 @@ public sealed class AudioEngine : IDisposable
                 {
                     DeviceName = _inputDevice.FriendlyName,
                     WasInput = true,
-                    RecoveryMessage = "The microphone stopped. Recording was saved up to the last written audio. Choose the mic again on Audio Setup."
+                    RecoveryMessage = "The microphone stopped. Recording was saved up to the last written audio. Choose the mic again from the Microphone list."
                 });
             }
         };
