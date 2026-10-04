@@ -2,6 +2,7 @@ using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using RyanMusicStudio.Core.Model;
 using RyanMusicStudio.Core.Persistence;
+using RyanMusicStudio.Core.Studio;
 using RyanMusicStudio.Core.Timeline;
 using RyanMusicStudio.Engine.Devices;
 using RyanMusicStudio.Engine.IO;
@@ -91,6 +92,7 @@ public sealed class AudioEngine : IDisposable
     public bool IsTakeActive => _takeActive || _recording || _countIn;
     public bool HasTakeFinalizationError => _takeFinalizationError != null;
     public bool IsPlaying => _playing;
+    public bool IsSongPlaying => _playing && _outputSource is ProjectMixer;
     public bool SoftwareMonitor
     {
         get => _config.SoftwareMonitor;
@@ -139,6 +141,46 @@ public sealed class AudioEngine : IDisposable
     }
 
     public void NotifyProjectChanged() => RebuildMix();
+
+    public void RefreshStudioBed()
+    {
+        if (_project == null) return;
+        StudioBedWriter.Write(_project);
+        _cache.Remove(StudioSong.BedMediaId);
+        var absolute = Path.Combine(_project.RootPath, StudioSong.BedRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(absolute))
+            _cache.LoadAbsolute(StudioSong.BedMediaId, absolute);
+        RebuildMix();
+    }
+
+    /// <summary>
+    /// Plays a short hit without starting the song. Ignored while the song itself is playing.
+    /// </summary>
+    public void PreviewSamples(float[] interleaved, int sampleRate)
+    {
+        if (interleaved.Length == 0 || IsSongPlaying || _takeActive || _recording) return;
+        try
+        {
+            if (_output != null && _outputSource is not ProjectMixer)
+            {
+                try { _output.Stop(); } catch { /* replacing a finished preview */ }
+                _output.Dispose();
+                _output = null;
+                _outputSource = null;
+            }
+            OpenOutput(new CachedAudioProvider(new CachedAudio
+            {
+                Interleaved = interleaved,
+                Channels = 2,
+                SampleRate = sampleRate
+            }));
+            _output!.Play();
+        }
+        catch (Exception ex)
+        {
+            Status("RMS could not play that sound. " + ex.Message);
+        }
+    }
 
     public void SetPlayhead(long frame) => SeekInternal(frame);
 

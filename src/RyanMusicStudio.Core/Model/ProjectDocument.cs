@@ -148,6 +148,7 @@ public sealed class ProjectDocument
     public List<AudioMedia> Media { get; set; } = [];
     public List<Track> Tracks { get; set; } = [];
     public MasterBus Master { get; set; } = new();
+    public SongSketch Studio { get; set; } = new();
     public bool Dirty { get; set; }
 
     public Track? FindTrack(string id) => Tracks.FirstOrDefault(t => t.Id == id);

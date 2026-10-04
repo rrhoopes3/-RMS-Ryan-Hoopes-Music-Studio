@@ -78,4 +78,45 @@ public static class ProjectFactory
         project.Touch();
         return track;
     }
+
+    public static ProjectDocument CreateStudioSong(string name, string folder, double tempoBpm, int sampleRate = 48000)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("Song name is required.", nameof(name));
+        if (!ProjectDocument.IsSupportedSampleRate(sampleRate))
+            throw new ArgumentOutOfRangeException(nameof(sampleRate), "Choose 44.1 kHz or 48 kHz.");
+        if (tempoBpm is < 20 or > 300)
+            throw new ArgumentOutOfRangeException(nameof(tempoBpm));
+
+        var project = new ProjectDocument
+        {
+            Name = name.Trim(),
+            RootPath = Path.GetFullPath(folder),
+            SampleRate = sampleRate,
+            TempoBpm = tempoBpm,
+            TimeSignature = new TimeSignature { Numerator = 4, Denominator = 4 },
+            CountInBars = 0,
+            PreRollBars = 0,
+            Studio = new SongSketch(),
+            Dirty = true
+        };
+
+        project.Tracks.Add(new Track
+        {
+            Name = "Beat",
+            Role = TrackRole.Backing,
+            Color = "#0E7C66",
+            Channels = TrackChannelLayout.Stereo,
+            Armed = false
+        });
+        project.Tracks.Add(new Track
+        {
+            Name = "Voice",
+            Role = TrackRole.Vocal,
+            Color = "#1A2428",
+            Channels = TrackChannelLayout.Mono,
+            Armed = true
+        });
+        return project;
+    }
 }

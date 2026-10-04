@@ -14,7 +14,7 @@ public partial class App : Application
     {
         MessageBox.Show(
             e.Exception.Message + Environment.NewLine + Environment.NewLine +
-            "Your finished takes stay on disk. Try Audio Setup if a device changed.",
+            "Your song stays on this computer. Close RMS and open it again if this keeps happening.",
             "RMS — something stopped",
             MessageBoxButton.OK,
             MessageBoxImage.Warning);
