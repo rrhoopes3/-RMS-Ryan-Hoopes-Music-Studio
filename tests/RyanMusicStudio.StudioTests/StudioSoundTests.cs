@@ -163,12 +163,14 @@ public class StudioSoundTests
     }
 
     [Fact]
-    public void An_old_one_bar_beat_preview_loop_is_cleared_but_a_real_loop_is_kept()
+    public void An_old_automatic_beat_loop_is_cleared_but_a_real_loop_is_kept()
     {
         var project = ProjectFactory.CreateStudioSong("Legacy",
             Path.Combine(Path.GetTempPath(), "rms-legacy-" + Guid.NewGuid().ToString("N")), 100, 48000);
         var bar = StudioSong.BarFrames(project);
         StudioSong.Place(project, bar);
+        Assert.True(StudioSong.SavedBeforeLoopCleanup(project));
+
         project.Loop.Enabled = true;
         project.Loop.StartFrame = 0;
         project.Loop.EndFrame = bar;
@@ -177,10 +179,19 @@ public class StudioSoundTests
         Assert.False(project.Loop.Enabled);
         Assert.False(StudioSong.ClearBeatPreviewLoop(project));
 
+        // 1.1 also looped the whole bed from the top: whole bars.
         project.Loop.Enabled = true;
-        project.Loop.EndFrame = bar * 2;
+        project.Loop.EndFrame = bar * 3;
+        Assert.True(StudioSong.ClearBeatPreviewLoop(project));
+
+        // A loop the singer dragged ends between bars, or does not start at the top.
+        project.Loop.Enabled = true;
+        project.Loop.EndFrame = bar * 2 + 1000;
         Assert.False(StudioSong.ClearBeatPreviewLoop(project));
         Assert.True(project.Loop.Enabled);
+        project.Loop.StartFrame = bar;
+        project.Loop.EndFrame = bar * 2;
+        Assert.False(StudioSong.ClearBeatPreviewLoop(project));
 
         var old = ProjectFactory.CreateVocalOverBeat("Old",
             Path.Combine(Path.GetTempPath(), "rms-o2-" + Guid.NewGuid().ToString("N")), 100, 4, 4, 48000);
@@ -188,6 +199,55 @@ public class StudioSoundTests
         old.Loop.StartFrame = 0;
         old.Loop.EndFrame = StudioSong.BarFrames(old);
         Assert.False(StudioSong.ClearBeatPreviewLoop(old));
+    }
+
+    [Fact]
+    public void An_old_beat_loop_is_still_found_after_the_tempo_was_changed()
+    {
+        var project = ProjectFactory.CreateStudioSong("Nudged",
+            Path.Combine(Path.GetTempPath(), "rms-nudge-" + Guid.NewGuid().ToString("N")), 100, 48000);
+        var oldBar = StudioSong.BarFrames(project);
+        StudioSong.Place(project, oldBar);
+        project.Loop.Enabled = true;
+        project.Loop.StartFrame = 0;
+        project.Loop.EndFrame = oldBar;
+        // 1.1 kept the loop frames when the tempo was nudged.
+        project.TempoBpm = 110;
+        Assert.NotEqual(oldBar, StudioSong.BarFrames(project));
+        Assert.True(StudioSong.ClearBeatPreviewLoop(project));
+        Assert.False(project.Loop.Enabled);
+    }
+
+    [Fact]
+    public void A_loop_in_a_song_saved_by_this_version_is_never_cleared()
+    {
+        var project = ProjectFactory.CreateStudioSong("Mine",
+            Path.Combine(Path.GetTempPath(), "rms-mine-" + Guid.NewGuid().ToString("N")), 100, 48000);
+        var bar = StudioSong.BarFrames(project);
+        StudioSong.Place(project, bar);
+        project.AppVersion = "1.2.1";
+        Assert.False(StudioSong.SavedBeforeLoopCleanup(project));
+        project.Loop.Enabled = true;
+        project.Loop.StartFrame = 0;
+        project.Loop.EndFrame = bar;
+        Assert.False(StudioSong.ClearBeatPreviewLoop(project));
+        Assert.True(project.Loop.Enabled);
+
+        project.AppVersion = "1.10.0";
+        Assert.False(StudioSong.SavedBeforeLoopCleanup(project));
+        project.AppVersion = "not a version";
+        Assert.True(StudioSong.SavedBeforeLoopCleanup(project));
+    }
+
+    [Fact]
+    public void The_written_version_survives_save_and_open()
+    {
+        var project = ProjectFactory.CreateStudioSong("Stamp",
+            Path.Combine(Path.GetTempPath(), "rms-stamp-" + Guid.NewGuid().ToString("N")), 100, 48000);
+        project.AppVersion = "1.2.1";
+        var json = RyanMusicStudio.Core.Editing.ProjectSerializer.ToJson(project);
+        var back = RyanMusicStudio.Core.Editing.ProjectSerializer.FromJson(json, project.RootPath);
+        Assert.Equal("1.2.1", back.AppVersion);
     }
 
     [Fact]
@@ -223,6 +283,44 @@ public class StudioSoundTests
         var newBar = StudioSong.BarFrames(project);
         Assert.InRange(project.Loop.StartFrame, newBar - 2, newBar + 2);
         Assert.InRange(project.Loop.EndFrame, newBar * 3 - 2, newBar * 3 + 2);
+    }
+
+    [Fact]
+    public void A_tempo_change_leaves_a_loop_on_recorded_audio_where_it_is()
+    {
+        var project = ProjectFactory.CreateStudioSong("Vocal",
+            Path.Combine(Path.GetTempPath(), "rms-vocal-" + Guid.NewGuid().ToString("N")), 100, 48000);
+        var bar = StudioSong.BarFrames(project);
+        StudioSong.Place(project, bar);
+        project.Tracks.Single(t => t.Role == TrackRole.Vocal).Takes.Add(new Take { StartFrame = 0, LengthFrames = 48000 * 60 });
+        project.Loop.Enabled = true;
+        project.Loop.StartFrame = 0;
+        project.Loop.EndFrame = 48000 * 60;
+
+        StudioSong.ScaleLoopForTempo(project, 100, 120);
+        Assert.Equal(0, project.Loop.StartFrame);
+        Assert.Equal(48000L * 60, project.Loop.EndFrame);
+    }
+
+    [Fact]
+    public void Undo_re_renders_the_beat_only_when_it_would_sound_different()
+    {
+        var a = ProjectFactory.CreateStudioSong("A",
+            Path.Combine(Path.GetTempPath(), "rms-bd-" + Guid.NewGuid().ToString("N")), 100, 48000);
+        var b = RyanMusicStudio.Core.Editing.ProjectSerializer.FromJson(
+            RyanMusicStudio.Core.Editing.ProjectSerializer.ToJson(a), a.RootPath);
+        Assert.False(StudioSong.BedDiffers(a, b));
+
+        b.Tracks[0].GainDb = -6; // a fader move
+        Assert.False(StudioSong.BedDiffers(a, b));
+
+        b.Studio.ToggleDrum(DrumVoice.Kick, 0);
+        Assert.True(StudioSong.BedDiffers(a, b));
+
+        var c = RyanMusicStudio.Core.Editing.ProjectSerializer.FromJson(
+            RyanMusicStudio.Core.Editing.ProjectSerializer.ToJson(a), a.RootPath);
+        c.TempoBpm = 120;
+        Assert.True(StudioSong.BedDiffers(a, c));
     }
 
     [Fact]

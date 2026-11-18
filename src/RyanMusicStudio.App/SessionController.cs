@@ -40,6 +40,7 @@ public sealed class SessionController : IDisposable
     private string? _heardBeforeTake; // the take the armed track played when R was pressed
     private bool _shuttingDown;
     private bool _mixGesture;
+    private bool _mixGestureRemembered;
     private Task? _testTakeTask;
 
     public event Action? Changed;
@@ -280,7 +281,7 @@ public sealed class SessionController : IDisposable
         try
         {
             var folder = Path.Combine(Path.GetTempPath(), "RMS", "test-takes");
-            SetStatus("Recording a short test. Sing a lineâ€¦");
+            SetStatus("Recording a short test. Sing a line…");
             var path = await _engine.RecordTestTakeAsync(TimeSpan.FromSeconds(4), folder);
             if (_shuttingDown || _engine.IsTakeActive) return;
             _engine.PlayFile(path);
@@ -456,7 +457,7 @@ public sealed class SessionController : IDisposable
     {
         Loading = true;
         Problem = null;
-        SetStatus("Opening your songâ€¦");
+        SetStatus("Opening your song…");
         try
         {
             _engine.MetronomeEnabled = false;
@@ -511,7 +512,7 @@ public sealed class SessionController : IDisposable
     {
         Loading = true;
         Problem = null;
-        SetStatus("Opening your songâ€¦");
+        SetStatus("Opening your song…");
         try
         {
             if (!TryOpen(root))
@@ -604,6 +605,7 @@ public sealed class SessionController : IDisposable
     public void ToggleDrum(DrumVoice voice, int step)
     {
         if (Project == null) return;
+        Remember();
         var on = Project.Studio.ToggleDrum(voice, step);
         RefreshStudioBed();
         var name = voice switch
@@ -647,6 +649,7 @@ public sealed class SessionController : IDisposable
     public void PlaceMelody(int step)
     {
         if (Project == null) return;
+        Remember();
         Project.Studio.SetMelody(step, MelodyPen);
         RefreshStudioBed();
         var name = SongSketch.NoteName(Project.Studio.Melody[Math.Clamp(step, 0, SongSketch.StepCount - 1)]);
@@ -733,8 +736,9 @@ public sealed class SessionController : IDisposable
         }
         if (_engine.IsRecording)
             _ = StopCurrentTakeAsync(); // Space ends the take and keeps it
-        else if (_engine.IsPlaying || _engine.IsTakeActive)
+        else if (_engine.IsSongPlaying || _engine.IsTakeActive || _engine.IsTestTaking)
             Stop();
+        // A drum-pad preview or a test-take playback may still be sounding; Play takes the output over.
         else
         {
             try { _engine.Play(); }
@@ -795,8 +799,8 @@ public sealed class SessionController : IDisposable
         // take (Remember() skips edits made during the take, so they undo together with it).
         _undo.RememberBeforeChange(Project);
         var from = _engine.PlayheadFrames;
-        if (_engine.IsRecording && Project is { Punch.Enabled: false } && from > 0)
-            SetStatus($"Recording on {armed.Name} from {Clock(from)}. Press Return to start first to record from the top.");
+        if (_engine.IsTakeActive && Project is { Punch.Enabled: false } && from > 0)
+            SetStatus($"Recording on {armed.Name} from {Clock(from)}. To record from the top next time, press Return to start (⏮) before Record.");
     }
 
     public void Stop()
@@ -868,11 +872,13 @@ public sealed class SessionController : IDisposable
     private void ReplaceAfterUndo(ProjectDocument next)
     {
         var playhead = _engine.PlayheadFrames;
+        var previous = Project;
         Project = next;
         Project.Touch(); // the restored copy differs from the file on disk, so it still needs saving
         _engine.AttachProject(Project);
-        // studio-bed.wav on disk holds the newest pattern and tempo, not the restored one.
-        if (StudioSong.HasBed(Project))
+        // studio-bed.wav on disk holds the newest pattern and tempo; re-render only when the
+        // restored beat would sound different (a fader undo must not rewrite the beat).
+        if (StudioSong.HasBed(Project) && (previous == null || StudioSong.BedDiffers(previous, Project)))
             RefreshStudioBed();
         _engine.SetPlayhead(playhead);
         Raise();
@@ -977,16 +983,30 @@ public sealed class SessionController : IDisposable
     /// <summary>A fader drag is one undo step, however many values it passes through.</summary>
     public void BeginMixGesture()
     {
-        Remember();
         _mixGesture = true;
+        _mixGestureRemembered = false;
     }
 
     public void EndMixGesture() => _mixGesture = false;
 
+    /// <summary>One snapshot per drag, taken before the first real change, so a click that
+    /// moves nothing leaves the undo and redo history alone.</summary>
+    private void RememberForMix()
+    {
+        if (!_mixGesture)
+        {
+            Remember();
+            return;
+        }
+        if (_mixGestureRemembered) return;
+        Remember();
+        _mixGestureRemembered = true;
+    }
+
     public void SetTrackGain(Track track, double db)
     {
         if (Project == null || Math.Abs(track.GainDb - db) < 1e-9) return;
-        if (!_mixGesture) Remember();
+        RememberForMix();
         track.GainDb = db;
         Project.Touch();
         _engine.NotifyTrackLevelsChanged(track);
@@ -995,7 +1015,7 @@ public sealed class SessionController : IDisposable
     public void SetTrackPan(Track track, double pan)
     {
         if (Project == null || Math.Abs(track.Pan - pan) < 1e-9) return;
-        if (!_mixGesture) Remember();
+        RememberForMix();
         track.Pan = pan;
         Project.Touch();
         _engine.NotifyTrackLevelsChanged(track);
@@ -1313,7 +1333,7 @@ public sealed class SessionController : IDisposable
         if (Project == null) return;
         var start = scope == ExportScope.SelectedRange ? Project.SelectionStartFrame : 0;
         var end = scope == ExportScope.SelectedRange ? Project.SelectionEndFrame : Project.LengthFrames();
-        SetStatus("Exporting " + Path.GetFileName(dest) + "â€¦");
+        SetStatus("Exporting " + Path.GetFileName(dest) + "…");
         await Task.Run(() => _exporter.Export(Project, _engine.Cache, dest, format, scope, start, end));
         SetStatus($"Exported {Path.GetFileName(dest)}. The click track and any reference track were left out.");
     }
@@ -1388,8 +1408,10 @@ public sealed class SessionController : IDisposable
     {
         if (_engine.IsPlaying)
             _engine.Stop(); // the old song's mixer must not keep playing into the new one
-        if (StudioSong.ClearBeatPreviewLoop(project))
-            project.Touch();
+        // An automatic loop from an older build is switched off in memory only: opening a song is
+        // not an edit. Stamping the version afterwards means a loop set from now on is kept.
+        StudioSong.ClearBeatPreviewLoop(project);
+        project.AppVersion = AppVersionText;
         Project = project;
         _undo.Clear();
         try { _store.MarkUncleanExit(project.RootPath); }
@@ -1440,7 +1462,7 @@ public sealed class SessionController : IDisposable
         MessageBox.Show(
             "This song has autosaved work that is newer than its last save. RMS may not have closed cleanly.\n\n" +
             "Restore the newer work?\n\nYes: restore it.\nNo: open the last save.",
-            "RMS â€” recover work?",
+            "RMS — recover work?",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question) == MessageBoxResult.Yes;
 
@@ -1481,6 +1503,9 @@ public sealed class SessionController : IDisposable
         _settings.Save();
         Raise();
     }
+
+    private static readonly string AppVersionText =
+        typeof(SessionController).Assembly.GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : "1.2.1";
 
     private void Remember()
     {

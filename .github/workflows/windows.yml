@@ -1,0 +1,38 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main, 'fix/**']
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Test
+        run: dotnet test RyanMusicStudio.sln -c Release --nologo
+      - name: Publish portable RMS.exe
+        run: >-
+          dotnet publish src/RyanMusicStudio.App/RyanMusicStudio.App.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -o dist/RMS-portable
+      - name: Check the exe
+        shell: pwsh
+        run: |
+          $exe = "dist/RMS-portable/RMS.exe"
+          if (-not (Test-Path $exe)) { throw "No RMS.exe" }
+          $info = (Get-Item $exe).VersionInfo
+          "FileVersion: $($info.FileVersion)  ProductVersion: $($info.ProductVersion)  Size: $((Get-Item $exe).Length)"
+          (Get-FileHash $exe -Algorithm SHA256).Hash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RMS-Windows
+          path: dist/RMS-portable/RMS.exe
+          if-no-files-found: error

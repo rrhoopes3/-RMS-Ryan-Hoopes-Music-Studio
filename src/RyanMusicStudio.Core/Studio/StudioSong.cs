@@ -41,13 +41,36 @@ public static class StudioSong
     public static bool StopTakeAtLoopWrap(ProjectDocument project) =>
         project.Loop.Enabled && !project.LoopRecording && project.Loop.EndFrame > project.Loop.StartFrame;
 
+    /// <summary>Songs saved by this version or later never carry an automatic beat loop.</summary>
+    public static readonly Version LoopCleanupDoneIn = new(1, 2, 1);
+
     /// <summary>
-    /// Earlier studio builds switched on a one-bar transport loop just to repeat the beat.
-    /// That loop cuts a longer vocal off on playback.
+    /// Songs saved before 1.2.1 do not record which version wrote them ("1.0.0" is the default),
+    /// so they may still hold a loop an older studio build turned on by itself.
     /// </summary>
-    public static bool IsBeatPreviewLoop(ProjectDocument project) =>
-        HasBed(project) && project.Loop.Enabled &&
-        project.Loop.StartFrame == 0 && project.Loop.EndFrame == BarFrames(project);
+    public static bool SavedBeforeLoopCleanup(ProjectDocument project) =>
+        !Version.TryParse(project.AppVersion, out var written) || written < LoopCleanupDoneIn;
+
+    /// <summary>
+    /// Earlier studio builds switched on a transport loop just to repeat the beat: from the top,
+    /// over whole bars at the tempo of the day. A later tempo change kept those frames, so the
+    /// end can be whole bars at any tempo the app allows. That loop cuts a longer vocal off.
+    /// Songs saved by 1.2.1 or later are left alone, so a loop the singer set is kept.
+    /// </summary>
+    public static bool IsBeatPreviewLoop(ProjectDocument project)
+    {
+        if (!HasBed(project) || !project.Loop.Enabled || project.Loop.StartFrame != 0) return false;
+        if (!SavedBeforeLoopCleanup(project)) return false;
+        var end = project.Loop.EndFrame;
+        if (end <= 0) return false;
+        var (num, den) = (project.TimeSignature.Numerator, project.TimeSignature.Denominator);
+        if (end % BarFrames(project.SampleRate, project.TempoBpm, num, den) == 0) return true;
+        for (var bpm = 60; bpm <= 180; bpm++)
+        {
+            if (end % BarFrames(project.SampleRate, bpm, num, den) == 0) return true;
+        }
+        return false;
+    }
 
     public static bool ClearBeatPreviewLoop(ProjectDocument project)
     {
@@ -64,15 +87,28 @@ public static class StudioSong
         return (0, Math.Max(BarFrames(project), project.LengthFrames()));
     }
 
-    /// <summary>Keeps a loop on the same beats of the pattern when the tempo changes.</summary>
+    /// <summary>
+    /// Keeps a loop on the same beats of the pattern when the tempo changes. Recorded and imported
+    /// audio does not stretch with the tempo, so once a song has any, the loop stays where it is,
+    /// on the audio the singer marked it around.
+    /// </summary>
     public static void ScaleLoopForTempo(ProjectDocument project, double oldTempo, double newTempo)
     {
         if (!double.IsFinite(oldTempo) || !double.IsFinite(newTempo) || oldTempo <= 0 || newTempo <= 0) return;
         if (project.Loop.EndFrame <= project.Loop.StartFrame) return;
+        if (project.Tracks.Any(HasSingerAudio)) return;
         var ratio = oldTempo / newTempo;
         project.Loop.StartFrame = (long)Math.Round(project.Loop.StartFrame * ratio);
         project.Loop.EndFrame = Math.Max(project.Loop.StartFrame + 1, (long)Math.Round(project.Loop.EndFrame * ratio));
     }
+
+    /// <summary>True when the rendered beat would come out different: pattern, volume, tempo or meter.</summary>
+    public static bool BedDiffers(ProjectDocument a, ProjectDocument b) =>
+        Math.Abs(a.TempoBpm - b.TempoBpm) > 1e-9 ||
+        a.SampleRate != b.SampleRate ||
+        a.TimeSignature.Numerator != b.TimeSignature.Numerator ||
+        a.TimeSignature.Denominator != b.TimeSignature.Denominator ||
+        System.Text.Json.JsonSerializer.Serialize(a.Studio) != System.Text.Json.JsonSerializer.Serialize(b.Studio);
 
     public static bool LooksEmpty(ProjectDocument project)
     {
